@@ -108,6 +108,8 @@ export default function (pi: ExtensionAPI) {
       if (config.contentCapture) {
         redactor = new Redactor();
       }
+
+      console.error(`[sigil-pi] enabled, endpoint=${config.endpoint} auth=${config.auth.mode}`);
     } catch (err) {
       console.warn("[sigil-pi] session_start failed:", err);
       sigil = null;
@@ -188,6 +190,7 @@ export default function (pi: ExtensionAPI) {
           recorder.setCallError(new Error(msg.errorMessage));
         }
       });
+      console.error(`[sigil-pi] generation queued, model=${msg.model} tokens=${msg.usage.totalTokens}`);
     } catch (err) {
       console.warn("[sigil-pi] turn_end failed:", err);
     } finally {
