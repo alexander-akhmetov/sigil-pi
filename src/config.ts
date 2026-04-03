@@ -20,6 +20,7 @@ export interface SigilPiConfig {
   agentName: string;
   agentVersion?: string;
   contentCapture: boolean;
+  debug: boolean;
   otlp?: OtlpConfig;
 }
 
@@ -31,6 +32,7 @@ const DISABLED: Readonly<SigilPiConfig> = {
   auth: { mode: "none" },
   agentName: "pi",
   contentCapture: false,
+  debug: false,
 };
 
 export async function loadConfig(): Promise<SigilPiConfig> {
@@ -91,6 +93,8 @@ export function resolveConfig(file: Record<string, unknown>): SigilPiConfig {
   const contentCapture =
     envBool("SIGIL_PI_CONTENT_CAPTURE") ?? toBool(file.contentCapture) ?? false;
 
+  const debug = envBool("SIGIL_PI_DEBUG") ?? toBool(file.debug) ?? false;
+
   const otlp = resolveOtlp(file);
 
   return {
@@ -100,6 +104,7 @@ export function resolveConfig(file: Record<string, unknown>): SigilPiConfig {
     agentName,
     agentVersion,
     contentCapture,
+    debug,
     otlp,
   };
 }

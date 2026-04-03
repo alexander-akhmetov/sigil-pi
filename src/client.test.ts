@@ -18,6 +18,7 @@ function makeConfig(overrides?: Partial<SigilPiConfig>): SigilPiConfig {
     auth: { mode: "none" },
     agentName: "pi",
     contentCapture: false,
+    debug: false,
     ...overrides,
   };
 }
