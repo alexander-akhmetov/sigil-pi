@@ -33,8 +33,7 @@ const stubPlugin = {
 };
 
 const sdkSrc = process.argv[2] || "../sigil-sdk/js/dist/index.js";
-const outfile =
-  process.argv[3] || "vendor/sigil-sdk-js/dist/index.js";
+const outfile = process.argv[3] || "vendor/sigil-sdk-js/dist/index.js";
 
 await build({
   entryPoints: [sdkSrc],
