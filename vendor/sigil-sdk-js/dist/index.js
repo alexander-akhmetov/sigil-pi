@@ -248,8 +248,6 @@ function normalizedString(value) {
 // ../sigil-sdk/js/dist/exporters/grpc.js
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as grpc from "@grpc/grpc-js";
-import * as protoLoader from "@grpc/proto-loader";
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var defaultProtoPath = join(__dirname, "../../proto/sigil/v1/generation_ingest.proto");
@@ -278,7 +276,7 @@ var GRPCGenerationExporter = class {
     if (client === void 0 || typeof client.ExportGenerations !== "function") {
       throw new Error("grpc exporter client is unavailable");
     }
-    const metadata = new grpc.Metadata();
+    const metadata = new (void 0)();
     for (const [key, value] of Object.entries(this.headers)) {
       metadata.set(key, value);
     }
@@ -315,13 +313,13 @@ var GRPCGenerationExporter = class {
     this.initPromise = void 0;
   }
   async initializeClient() {
-    const packageDefinition = await protoLoader.load(defaultProtoPath, protoLoadOptions);
-    const loaded = grpc.loadPackageDefinition(packageDefinition);
+    const packageDefinition = await (void 0)(defaultProtoPath, protoLoadOptions);
+    const loaded = (void 0)(packageDefinition);
     const clientCtor = loaded.sigil?.v1?.GenerationIngestService;
     if (clientCtor === void 0) {
       throw new Error("failed to load sigil.v1.GenerationIngestService from proto");
     }
-    const credentials2 = this.insecure ? grpc.credentials.createInsecure() : grpc.credentials.createSsl();
+    const credentials2 = this.insecure ? (void 0).createInsecure() : (void 0).createSsl();
     this.client = new clientCtor(this.endpoint, credentials2);
   }
 };
