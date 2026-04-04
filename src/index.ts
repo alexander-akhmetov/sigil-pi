@@ -202,6 +202,14 @@ export default function (pi: ExtensionAPI) {
         if (msg.errorMessage) {
           recorder.setCallError(new Error(msg.errorMessage));
         }
+
+        emitToolSpans(sigil!, msg, toolResults, turnToolTimings, {
+          conversationId,
+          agentName: config!.agentName,
+          agentVersion: config!.agentVersion,
+          contentCapture,
+          redactor: redactor ?? undefined,
+        });
       });
       debugLog(
         `generation queued, model=${msg.model} tokens=${msg.usage.totalTokens}`,
@@ -226,6 +234,76 @@ export default function (pi: ExtensionAPI) {
     sigil = null;
     await resetSessionState();
   });
+}
+
+/** @internal Exported for testing. */
+export function emitToolSpans(
+  client: SigilClient,
+  msg: PiAssistantMessage,
+  toolResults: PiToolResult[],
+  timings: ToolTiming[],
+  opts: {
+    conversationId?: string;
+    agentName: string;
+    agentVersion?: string;
+    contentCapture: boolean;
+    redactor?: Redactor;
+  },
+): void {
+  if (timings.length === 0) return;
+
+  const argsMap = new Map<string, Record<string, unknown>>();
+  for (const block of msg.content) {
+    if (block.type === "toolCall") {
+      argsMap.set(block.id, block.arguments);
+    }
+  }
+
+  const resultMap = new Map<string, { content: string; isError: boolean }>();
+  for (const tr of toolResults) {
+    const text = tr.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text" && !!c.text)
+      .map((c) => c.text)
+      .join("\n");
+    resultMap.set(tr.toolCallId, { content: text, isError: tr.isError });
+  }
+
+  for (const timing of timings) {
+    const toolRec = client.startToolExecution({
+      toolName: timing.toolName,
+      toolCallId: timing.toolCallId,
+      toolType: "function",
+      conversationId: opts.conversationId,
+      agentName: opts.agentName,
+      agentVersion: opts.agentVersion,
+      requestModel: msg.model,
+      requestProvider: msg.provider,
+      startedAt: new Date(timing.startedAt),
+      includeContent: opts.contentCapture,
+    });
+
+    const end: { arguments?: unknown; result?: unknown; completedAt: Date } = {
+      completedAt: new Date(timing.completedAt),
+    };
+
+    if (opts.contentCapture && opts.redactor) {
+      const args = argsMap.get(timing.toolCallId);
+      if (args) {
+        end.arguments = opts.redactor.redact(JSON.stringify(args));
+      }
+      const tr = resultMap.get(timing.toolCallId);
+      if (tr) {
+        end.result = opts.redactor.redact(tr.content);
+      }
+    }
+
+    if (timing.isError) {
+      toolRec.setCallError(new Error("tool returned error"));
+    }
+
+    toolRec.setResult(end);
+    toolRec.end();
+  }
 }
 
 function isAssistantMessage(message: unknown): message is PiAssistantMessage {

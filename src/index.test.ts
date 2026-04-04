@@ -17,11 +17,21 @@ vi.mock("./client.js", () => ({
   createSigilClient: createSigilClientMock,
 }));
 
-import registerExtension from "./index.js";
+import registerExtension, { emitToolSpans } from "./index.js";
+import type { PiAssistantMessage, PiToolResult, ToolTiming } from "./mappers.js";
+import { Redactor } from "./redact.js";
+import type { SigilClient } from "@grafana/sigil-sdk-js";
 
 interface RecorderLike {
   setResult: (value: unknown) => void;
   setCallError: (error: Error) => void;
+}
+
+interface ToolRecorderLike {
+  setResult: ReturnType<typeof vi.fn>;
+  setCallError: ReturnType<typeof vi.fn>;
+  end: ReturnType<typeof vi.fn>;
+  getError: ReturnType<typeof vi.fn>;
 }
 
 interface SigilLike {
@@ -29,6 +39,7 @@ interface SigilLike {
     seed: unknown,
     run: (recorder: RecorderLike) => Promise<void>,
   ) => Promise<void>;
+  startToolExecution: ReturnType<typeof vi.fn>;
   shutdown: () => Promise<void>;
 }
 
@@ -87,6 +98,12 @@ describe("extension lifecycle", () => {
       startGeneration: vi.fn(async (_seed, run) => {
         await run(recorder);
       }),
+      startToolExecution: vi.fn(() => ({
+        setResult: vi.fn(),
+        setCallError: vi.fn(),
+        end: vi.fn(),
+        getError: vi.fn(),
+      })),
       shutdown: vi.fn(async () => {}),
     };
 
@@ -160,8 +177,66 @@ describe("extension lifecycle", () => {
     expect(startedAt).toBeLessThanOrEqual(completedAt);
   });
 
-  it("swallows sigil failures instead of throwing", async () => {
+  it("emits tool execution spans on turn_end", async () => {
+    const toolRecorders: ToolRecorderLike[] = [];
+    const recorder = {
+      setResult: vi.fn(),
+      setCallError: vi.fn(),
+    };
+
     const sigil: SigilLike = {
+      startGeneration: vi.fn(async (_seed, run) => {
+        await run(recorder);
+      }),
+      startToolExecution: vi.fn(() => {
+        const tr: ToolRecorderLike = {
+          setResult: vi.fn(),
+          setCallError: vi.fn(),
+          end: vi.fn(),
+          getError: vi.fn(),
+        };
+        toolRecorders.push(tr);
+        return tr;
+      }),
+      shutdown: vi.fn(async () => {}),
+    };
+
+    loadConfigMock.mockResolvedValue({
+      enabled: true,
+      endpoint: "http://localhost:8080/api/v1/generations:export",
+      auth: { mode: "none" },
+      agentName: "pi",
+      contentCapture: false,
+    });
+    createSigilClientMock.mockReturnValue(sigil);
+
+    const pi = new FakePi();
+    registerExtension(pi as any);
+
+    await pi.emit("session_start");
+    await pi.emit("turn_start");
+    await pi.emit("tool_execution_start", { toolCallId: "c1", toolName: "read" });
+    await pi.emit("tool_execution_end", { toolCallId: "c1", isError: false });
+    await pi.emit("tool_execution_start", { toolCallId: "c2", toolName: "write" });
+    await pi.emit("tool_execution_end", { toolCallId: "c2", isError: true });
+
+    const msg = assistantMessage();
+    msg.content = [
+      { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.go" } },
+      { type: "toolCall", id: "c2", name: "write", arguments: { path: "b.go" } },
+    ];
+
+    await pi.emit("turn_end", { message: msg, toolResults: [] });
+
+    expect(sigil.startToolExecution).toHaveBeenCalledTimes(2);
+    expect(toolRecorders).toHaveLength(2);
+    expect(toolRecorders[0].end).toHaveBeenCalled();
+    expect(toolRecorders[1].end).toHaveBeenCalled();
+    expect(toolRecorders[1].setCallError).toHaveBeenCalled();
+  });
+
+  it("swallows sigil failures instead of throwing", async () => {
+    const sigil = {
       startGeneration: vi.fn(async () => {
         throw new Error("transport down");
       }),
@@ -186,5 +261,179 @@ describe("extension lifecycle", () => {
     await expect(
       pi.emit("turn_end", { message: assistantMessage(), toolResults: [] }),
     ).resolves.toBeUndefined();
+  });
+});
+
+// --- Unit tests for emitToolSpans ---
+
+function makePiMsg(overrides?: Partial<PiAssistantMessage>): PiAssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: "Hello" }],
+    provider: "anthropic",
+    model: "claude-sonnet-4-20250514",
+    usage: {
+      input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "toolUse",
+    timestamp: 1700000001000,
+    ...overrides,
+  };
+}
+
+function makePiTiming(overrides?: Partial<ToolTiming>): ToolTiming {
+  return {
+    toolCallId: "call-1", toolName: "bash",
+    startedAt: 1700000000500, completedAt: 1700000001500,
+    isError: false, ...overrides,
+  };
+}
+
+function makePiToolResult(overrides?: Partial<PiToolResult>): PiToolResult {
+  return {
+    role: "toolResult", toolCallId: "call-1", toolName: "bash",
+    content: [{ type: "text", text: "output" }],
+    isError: false, timestamp: 1700000002000, ...overrides,
+  };
+}
+
+function mockSigilClient() {
+  const recorders: Array<{
+    start: Record<string, unknown>;
+    result: Record<string, unknown> | undefined;
+    callError: unknown;
+    ended: boolean;
+  }> = [];
+
+  const client = {
+    startToolExecution: vi.fn((start: Record<string, unknown>) => {
+      const rec = { start, result: undefined as Record<string, unknown> | undefined, callError: undefined as unknown, ended: false };
+      recorders.push(rec);
+      return {
+        setResult: vi.fn((r: Record<string, unknown>) => { rec.result = r; }),
+        setCallError: vi.fn((e: unknown) => { rec.callError = e; }),
+        end: vi.fn(() => { rec.ended = true; }),
+        getError: vi.fn(() => undefined),
+      };
+    }),
+  } as unknown as SigilClient;
+
+  return { client, recorders };
+}
+
+describe("emitToolSpans", () => {
+  it("does nothing when no timings", () => {
+    const { client, recorders } = mockSigilClient();
+    emitToolSpans(client, makePiMsg(), [], [], {
+      agentName: "pi", contentCapture: false,
+    });
+    expect(recorders).toHaveLength(0);
+  });
+
+  it("creates a span per tool timing", () => {
+    const { client, recorders } = mockSigilClient();
+    const msg = makePiMsg({
+      content: [
+        { type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } },
+        { type: "toolCall", id: "c2", name: "read", arguments: { path: "a.go" } },
+      ],
+    });
+
+    emitToolSpans(client, msg, [], [
+      makePiTiming({ toolCallId: "c1", toolName: "bash" }),
+      makePiTiming({ toolCallId: "c2", toolName: "read" }),
+    ], { agentName: "pi", contentCapture: false });
+
+    expect(recorders).toHaveLength(2);
+    expect(recorders[0].start).toMatchObject({ toolName: "bash", toolCallId: "c1", toolType: "function" });
+    expect(recorders[1].start).toMatchObject({ toolName: "read", toolCallId: "c2", toolType: "function" });
+    expect(recorders.every((r) => r.ended)).toBe(true);
+  });
+
+  it("passes model and agent context", () => {
+    const { client, recorders } = mockSigilClient();
+    emitToolSpans(client, makePiMsg(), [], [makePiTiming({ toolCallId: "c1" })], {
+      conversationId: "conv-42", agentName: "pi", agentVersion: "2.0.0", contentCapture: false,
+    });
+
+    expect(recorders[0].start).toMatchObject({
+      conversationId: "conv-42", agentName: "pi", agentVersion: "2.0.0",
+      requestModel: "claude-sonnet-4-20250514", requestProvider: "anthropic",
+    });
+  });
+
+  it("includes arguments and results with content capture", () => {
+    const { client, recorders } = mockSigilClient();
+    const msg = makePiMsg({
+      content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } }],
+    });
+    const toolResults = [
+      makePiToolResult({ toolCallId: "c1", content: [{ type: "text", text: "file.txt" }] }),
+    ];
+
+    emitToolSpans(client, msg, toolResults, [makePiTiming({ toolCallId: "c1" })], {
+      agentName: "pi", contentCapture: true, redactor: new Redactor(),
+    });
+
+    expect(recorders[0].result?.arguments).toBe('{"cmd":"ls"}');
+    expect(recorders[0].result?.result).toBe("file.txt");
+  });
+
+  it("omits content when contentCapture is off", () => {
+    const { client, recorders } = mockSigilClient();
+    const msg = makePiMsg({
+      content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } }],
+    });
+
+    emitToolSpans(client, msg, [
+      makePiToolResult({ toolCallId: "c1" }),
+    ], [makePiTiming({ toolCallId: "c1" })], {
+      agentName: "pi", contentCapture: false,
+    });
+
+    expect(recorders[0].result?.arguments).toBeUndefined();
+    expect(recorders[0].result?.result).toBeUndefined();
+  });
+
+  it("marks error tool executions", () => {
+    const { client, recorders } = mockSigilClient();
+    emitToolSpans(client, makePiMsg(), [], [
+      makePiTiming({ toolCallId: "c1", isError: true }),
+    ], { agentName: "pi", contentCapture: false });
+
+    expect(recorders[0].callError).toBeInstanceOf(Error);
+  });
+
+  it("uses real start/end times", () => {
+    const { client, recorders } = mockSigilClient();
+    emitToolSpans(client, makePiMsg(), [], [
+      makePiTiming({ startedAt: 1000, completedAt: 5000 }),
+    ], { agentName: "pi", contentCapture: false });
+
+    expect(recorders[0].start).toMatchObject({ startedAt: new Date(1000) });
+    expect(recorders[0].result?.completedAt).toEqual(new Date(5000));
+  });
+
+  it("redacts secrets in arguments and results", () => {
+    const { client, recorders } = mockSigilClient();
+    const secret = "glc_abcdefghijklmnopqrstuvwxyz1234";
+    const msg = makePiMsg({
+      content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { token: secret } }],
+    });
+    const toolResults = [
+      makePiToolResult({ toolCallId: "c1", content: [{ type: "text", text: `Token: ${secret}` }] }),
+    ];
+
+    emitToolSpans(client, msg, toolResults, [makePiTiming({ toolCallId: "c1" })], {
+      agentName: "pi", contentCapture: true, redactor: new Redactor(),
+    });
+
+    const args = recorders[0].result?.arguments as string;
+    const result = recorders[0].result?.result as string;
+    expect(args).not.toContain(secret);
+    expect(args).toContain("[REDACTED:");
+    expect(result).not.toContain(secret);
+    expect(result).toContain("[REDACTED:");
   });
 });
