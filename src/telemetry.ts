@@ -5,7 +5,10 @@
  */
 
 import type { Meter, Tracer } from "@opentelemetry/api";
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
+import {
+  AggregationTemporalityPreference,
+  OTLPMetricExporter,
+} from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
   MeterProvider,
@@ -31,6 +34,7 @@ export function createTelemetryProviders(otlp: OtlpConfig): TelemetryProviders {
   const metricExporter = new OTLPMetricExporter({
     url: `${base}/v1/metrics`,
     headers: otlp.headers,
+    temporalityPreference: AggregationTemporalityPreference.DELTA,
   });
   const metricReader = new PeriodicExportingMetricReader({
     exporter: metricExporter,
