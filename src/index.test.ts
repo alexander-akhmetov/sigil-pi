@@ -17,10 +17,14 @@ vi.mock("./client.js", () => ({
   createSigilClient: createSigilClientMock,
 }));
 
-import registerExtension, { emitToolSpans } from "./index.js";
-import type { PiAssistantMessage, PiToolResult, ToolTiming } from "./mappers.js";
-import { Redactor } from "./redact.js";
 import type { SigilClient } from "@grafana/sigil-sdk-js";
+import registerExtension, { emitToolSpans } from "./index.js";
+import type {
+  PiAssistantMessage,
+  PiToolResult,
+  ToolTiming,
+} from "./mappers.js";
+import { Redactor } from "./redact.js";
 
 interface RecorderLike {
   setResult: (value: unknown) => void;
@@ -221,15 +225,26 @@ describe("extension lifecycle", () => {
 
     await pi.emit("session_start");
     await pi.emit("turn_start");
-    await pi.emit("tool_execution_start", { toolCallId: "c1", toolName: "read" });
+    await pi.emit("tool_execution_start", {
+      toolCallId: "c1",
+      toolName: "read",
+    });
     await pi.emit("tool_execution_end", { toolCallId: "c1", isError: false });
-    await pi.emit("tool_execution_start", { toolCallId: "c2", toolName: "write" });
+    await pi.emit("tool_execution_start", {
+      toolCallId: "c2",
+      toolName: "write",
+    });
     await pi.emit("tool_execution_end", { toolCallId: "c2", isError: true });
 
     const msg = assistantMessage();
     (msg as any).content = [
       { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.go" } },
-      { type: "toolCall", id: "c2", name: "write", arguments: { path: "b.go" } },
+      {
+        type: "toolCall",
+        id: "c2",
+        name: "write",
+        arguments: { path: "b.go" },
+      },
     ];
 
     await pi.emit("turn_end", { message: msg, toolResults: [] });
@@ -272,14 +287,20 @@ describe("extension lifecycle", () => {
 
 // --- Unit tests for emitToolSpans ---
 
-function makePiMsg(overrides?: Partial<PiAssistantMessage>): PiAssistantMessage {
+function makePiMsg(
+  overrides?: Partial<PiAssistantMessage>,
+): PiAssistantMessage {
   return {
     role: "assistant",
     content: [{ type: "text", text: "Hello" }],
     provider: "anthropic",
     model: "claude-sonnet-4-20250514",
     usage: {
-      input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150,
+      input: 100,
+      output: 50,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 150,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
     stopReason: "toolUse",
@@ -290,17 +311,24 @@ function makePiMsg(overrides?: Partial<PiAssistantMessage>): PiAssistantMessage 
 
 function makePiTiming(overrides?: Partial<ToolTiming>): ToolTiming {
   return {
-    toolCallId: "call-1", toolName: "bash",
-    startedAt: 1700000000500, completedAt: 1700000001500,
-    isError: false, ...overrides,
+    toolCallId: "call-1",
+    toolName: "bash",
+    startedAt: 1700000000500,
+    completedAt: 1700000001500,
+    isError: false,
+    ...overrides,
   };
 }
 
 function makePiToolResult(overrides?: Partial<PiToolResult>): PiToolResult {
   return {
-    role: "toolResult", toolCallId: "call-1", toolName: "bash",
+    role: "toolResult",
+    toolCallId: "call-1",
+    toolName: "bash",
     content: [{ type: "text", text: "output" }],
-    isError: false, timestamp: 1700000002000, ...overrides,
+    isError: false,
+    timestamp: 1700000002000,
+    ...overrides,
   };
 }
 
@@ -314,12 +342,23 @@ function mockSigilClient() {
 
   const client = {
     startToolExecution: vi.fn((start: Record<string, unknown>) => {
-      const rec = { start, result: undefined as Record<string, unknown> | undefined, callError: undefined as unknown, ended: false };
+      const rec = {
+        start,
+        result: undefined as Record<string, unknown> | undefined,
+        callError: undefined as unknown,
+        ended: false,
+      };
       recorders.push(rec);
       return {
-        setResult: vi.fn((r: Record<string, unknown>) => { rec.result = r; }),
-        setCallError: vi.fn((e: unknown) => { rec.callError = e; }),
-        end: vi.fn(() => { rec.ended = true; }),
+        setResult: vi.fn((r: Record<string, unknown>) => {
+          rec.result = r;
+        }),
+        setCallError: vi.fn((e: unknown) => {
+          rec.callError = e;
+        }),
+        end: vi.fn(() => {
+          rec.ended = true;
+        }),
         getError: vi.fn(() => undefined),
       };
     }),
@@ -332,7 +371,8 @@ describe("emitToolSpans", () => {
   it("does nothing when no timings", () => {
     const { client, recorders } = mockSigilClient();
     emitToolSpans(client, makePiMsg(), [], [], {
-      agentName: "pi", contentCapture: false,
+      agentName: "pi",
+      contentCapture: false,
     });
     expect(recorders).toHaveLength(0);
   });
@@ -342,45 +382,89 @@ describe("emitToolSpans", () => {
     const msg = makePiMsg({
       content: [
         { type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } },
-        { type: "toolCall", id: "c2", name: "read", arguments: { path: "a.go" } },
+        {
+          type: "toolCall",
+          id: "c2",
+          name: "read",
+          arguments: { path: "a.go" },
+        },
       ],
     });
 
-    emitToolSpans(client, msg, [], [
-      makePiTiming({ toolCallId: "c1", toolName: "bash" }),
-      makePiTiming({ toolCallId: "c2", toolName: "read" }),
-    ], { agentName: "pi", contentCapture: false });
+    emitToolSpans(
+      client,
+      msg,
+      [],
+      [
+        makePiTiming({ toolCallId: "c1", toolName: "bash" }),
+        makePiTiming({ toolCallId: "c2", toolName: "read" }),
+      ],
+      { agentName: "pi", contentCapture: false },
+    );
 
     expect(recorders).toHaveLength(2);
-    expect(recorders[0]!.start).toMatchObject({ toolName: "bash", toolCallId: "c1", toolType: "function" });
-    expect(recorders[1]!.start).toMatchObject({ toolName: "read", toolCallId: "c2", toolType: "function" });
+    expect(recorders[0]!.start).toMatchObject({
+      toolName: "bash",
+      toolCallId: "c1",
+      toolType: "function",
+    });
+    expect(recorders[1]!.start).toMatchObject({
+      toolName: "read",
+      toolCallId: "c2",
+      toolType: "function",
+    });
     expect(recorders.every((r) => r.ended)).toBe(true);
   });
 
   it("passes model and agent context", () => {
     const { client, recorders } = mockSigilClient();
-    emitToolSpans(client, makePiMsg(), [], [makePiTiming({ toolCallId: "c1" })], {
-      conversationId: "conv-42", agentName: "pi", agentVersion: "2.0.0", contentCapture: false,
-    });
+    emitToolSpans(
+      client,
+      makePiMsg(),
+      [],
+      [makePiTiming({ toolCallId: "c1" })],
+      {
+        conversationId: "conv-42",
+        agentName: "pi",
+        agentVersion: "2.0.0",
+        contentCapture: false,
+      },
+    );
 
     expect(recorders[0]!.start).toMatchObject({
-      conversationId: "conv-42", agentName: "pi", agentVersion: "2.0.0",
-      requestModel: "claude-sonnet-4-20250514", requestProvider: "anthropic",
+      conversationId: "conv-42",
+      agentName: "pi",
+      agentVersion: "2.0.0",
+      requestModel: "claude-sonnet-4-20250514",
+      requestProvider: "anthropic",
     });
   });
 
   it("includes arguments and results with content capture", () => {
     const { client, recorders } = mockSigilClient();
     const msg = makePiMsg({
-      content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } }],
+      content: [
+        { type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } },
+      ],
     });
     const toolResults = [
-      makePiToolResult({ toolCallId: "c1", content: [{ type: "text", text: "file.txt" }] }),
+      makePiToolResult({
+        toolCallId: "c1",
+        content: [{ type: "text", text: "file.txt" }],
+      }),
     ];
 
-    emitToolSpans(client, msg, toolResults, [makePiTiming({ toolCallId: "c1" })], {
-      agentName: "pi", contentCapture: true, redactor: new Redactor(),
-    });
+    emitToolSpans(
+      client,
+      msg,
+      toolResults,
+      [makePiTiming({ toolCallId: "c1" })],
+      {
+        agentName: "pi",
+        contentCapture: true,
+        redactor: new Redactor(),
+      },
+    );
 
     expect(recorders[0]!.result?.arguments).toBe('{"cmd":"ls"}');
     expect(recorders[0]!.result?.result).toBe("file.txt");
@@ -389,14 +473,21 @@ describe("emitToolSpans", () => {
   it("omits content when contentCapture is off", () => {
     const { client, recorders } = mockSigilClient();
     const msg = makePiMsg({
-      content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } }],
+      content: [
+        { type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } },
+      ],
     });
 
-    emitToolSpans(client, msg, [
-      makePiToolResult({ toolCallId: "c1" }),
-    ], [makePiTiming({ toolCallId: "c1" })], {
-      agentName: "pi", contentCapture: false,
-    });
+    emitToolSpans(
+      client,
+      msg,
+      [makePiToolResult({ toolCallId: "c1" })],
+      [makePiTiming({ toolCallId: "c1" })],
+      {
+        agentName: "pi",
+        contentCapture: false,
+      },
+    );
 
     expect(recorders[0]!.result?.arguments).toBeUndefined();
     expect(recorders[0]!.result?.result).toBeUndefined();
@@ -404,18 +495,26 @@ describe("emitToolSpans", () => {
 
   it("marks error tool executions", () => {
     const { client, recorders } = mockSigilClient();
-    emitToolSpans(client, makePiMsg(), [], [
-      makePiTiming({ toolCallId: "c1", isError: true }),
-    ], { agentName: "pi", contentCapture: false });
+    emitToolSpans(
+      client,
+      makePiMsg(),
+      [],
+      [makePiTiming({ toolCallId: "c1", isError: true })],
+      { agentName: "pi", contentCapture: false },
+    );
 
     expect(recorders[0]!.callError).toBeInstanceOf(Error);
   });
 
   it("uses real start/end times", () => {
     const { client, recorders } = mockSigilClient();
-    emitToolSpans(client, makePiMsg(), [], [
-      makePiTiming({ startedAt: 1000, completedAt: 5000 }),
-    ], { agentName: "pi", contentCapture: false });
+    emitToolSpans(
+      client,
+      makePiMsg(),
+      [],
+      [makePiTiming({ startedAt: 1000, completedAt: 5000 })],
+      { agentName: "pi", contentCapture: false },
+    );
 
     expect(recorders[0]!.start).toMatchObject({ startedAt: new Date(1000) });
     expect(recorders[0]!.result?.completedAt).toEqual(new Date(5000));
@@ -425,15 +524,33 @@ describe("emitToolSpans", () => {
     const { client, recorders } = mockSigilClient();
     const secret = "glc_abcdefghijklmnopqrstuvwxyz1234";
     const msg = makePiMsg({
-      content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { token: secret } }],
+      content: [
+        {
+          type: "toolCall",
+          id: "c1",
+          name: "bash",
+          arguments: { token: secret },
+        },
+      ],
     });
     const toolResults = [
-      makePiToolResult({ toolCallId: "c1", content: [{ type: "text", text: `Token: ${secret}` }] }),
+      makePiToolResult({
+        toolCallId: "c1",
+        content: [{ type: "text", text: `Token: ${secret}` }],
+      }),
     ];
 
-    emitToolSpans(client, msg, toolResults, [makePiTiming({ toolCallId: "c1" })], {
-      agentName: "pi", contentCapture: true, redactor: new Redactor(),
-    });
+    emitToolSpans(
+      client,
+      msg,
+      toolResults,
+      [makePiTiming({ toolCallId: "c1" })],
+      {
+        agentName: "pi",
+        contentCapture: true,
+        redactor: new Redactor(),
+      },
+    );
 
     const args = recorders[0]!.result?.arguments as string;
     const result = recorders[0]!.result?.result as string;

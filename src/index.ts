@@ -203,10 +203,11 @@ export default function (pi: ExtensionAPI) {
           recorder.setCallError(new Error(msg.errorMessage));
         }
 
-        emitToolSpans(sigil!, msg, toolResults, turnToolTimings, {
+        // sigil and config are guaranteed non-null by the guard at the top of this handler.
+        emitToolSpans(sigil as SigilClient, msg, toolResults, turnToolTimings, {
           conversationId,
-          agentName: config!.agentName,
-          agentVersion: config!.agentVersion,
+          agentName: (config as SigilPiConfig).agentName,
+          agentVersion: (config as SigilPiConfig).agentVersion,
           contentCapture,
           redactor: redactor ?? undefined,
         });
@@ -262,7 +263,10 @@ export function emitToolSpans(
   const resultMap = new Map<string, { content: string; isError: boolean }>();
   for (const tr of toolResults) {
     const text = tr.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text" && !!c.text)
+      .filter(
+        (c): c is { type: "text"; text: string } =>
+          c.type === "text" && !!c.text,
+      )
       .map((c) => c.text)
       .join("\n");
     resultMap.set(tr.toolCallId, { content: text, isError: tr.isError });
