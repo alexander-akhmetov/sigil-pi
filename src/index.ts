@@ -1,5 +1,6 @@
-import { createRequire } from "node:module";
-import { basename } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SigilClient } from "@grafana/sigil-sdk-js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createSigilClient } from "./client.js";
@@ -21,11 +22,26 @@ import {
 
 function detectPiVersion(): string | undefined {
   try {
-    const require = createRequire(import.meta.url);
-    const pkg = require("@mariozechner/pi-coding-agent/package.json") as {
-      version?: string;
-    };
-    return pkg.version;
+    // Resolve an exported subpath via ESM resolution, then walk up to package.json.
+    // createRequire won't work here: pi's package.json uses "import"-only exports.
+    const resolved = import.meta.resolve(
+      "@mariozechner/pi-coding-agent/hooks",
+    );
+    let dir = dirname(fileURLToPath(resolved));
+    for (let i = 0; i < 5; i++) {
+      try {
+        const pkgPath = join(dir, "package.json");
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+          name?: string;
+          version?: string;
+        };
+        if (pkg.name === "@mariozechner/pi-coding-agent") return pkg.version;
+      } catch {
+        // no package.json at this level, keep walking
+      }
+      dir = dirname(dir);
+    }
+    return undefined;
   } catch {
     return undefined;
   }

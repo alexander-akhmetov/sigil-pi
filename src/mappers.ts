@@ -96,8 +96,10 @@ export function mapGenerationResult(
     usage: {
       inputTokens: msg.usage.input,
       outputTokens: msg.usage.output,
+      totalTokens: msg.usage.input + msg.usage.output,
       cacheReadInputTokens: msg.usage.cacheRead,
       cacheCreationInputTokens: msg.usage.cacheWrite,
+      cacheWriteInputTokens: msg.usage.cacheWrite,
     },
     stopReason: mapStopReason(msg.stopReason),
     completedAt: new Date(msg.timestamp),
