@@ -145,6 +145,12 @@ describe("extension lifecycle", () => {
         capturedSeed = seed;
         await run(recorder);
       }),
+      startToolExecution: vi.fn(() => ({
+        setResult: vi.fn(),
+        setCallError: vi.fn(),
+        end: vi.fn(),
+        getError: vi.fn(),
+      })),
       shutdown: vi.fn(async () => {}),
     };
 
@@ -221,7 +227,7 @@ describe("extension lifecycle", () => {
     await pi.emit("tool_execution_end", { toolCallId: "c2", isError: true });
 
     const msg = assistantMessage();
-    msg.content = [
+    (msg as any).content = [
       { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.go" } },
       { type: "toolCall", id: "c2", name: "write", arguments: { path: "b.go" } },
     ];
@@ -230,9 +236,9 @@ describe("extension lifecycle", () => {
 
     expect(sigil.startToolExecution).toHaveBeenCalledTimes(2);
     expect(toolRecorders).toHaveLength(2);
-    expect(toolRecorders[0].end).toHaveBeenCalled();
-    expect(toolRecorders[1].end).toHaveBeenCalled();
-    expect(toolRecorders[1].setCallError).toHaveBeenCalled();
+    expect(toolRecorders[0]!.end).toHaveBeenCalled();
+    expect(toolRecorders[1]!.end).toHaveBeenCalled();
+    expect(toolRecorders[1]!.setCallError).toHaveBeenCalled();
   });
 
   it("swallows sigil failures instead of throwing", async () => {
@@ -346,8 +352,8 @@ describe("emitToolSpans", () => {
     ], { agentName: "pi", contentCapture: false });
 
     expect(recorders).toHaveLength(2);
-    expect(recorders[0].start).toMatchObject({ toolName: "bash", toolCallId: "c1", toolType: "function" });
-    expect(recorders[1].start).toMatchObject({ toolName: "read", toolCallId: "c2", toolType: "function" });
+    expect(recorders[0]!.start).toMatchObject({ toolName: "bash", toolCallId: "c1", toolType: "function" });
+    expect(recorders[1]!.start).toMatchObject({ toolName: "read", toolCallId: "c2", toolType: "function" });
     expect(recorders.every((r) => r.ended)).toBe(true);
   });
 
@@ -357,7 +363,7 @@ describe("emitToolSpans", () => {
       conversationId: "conv-42", agentName: "pi", agentVersion: "2.0.0", contentCapture: false,
     });
 
-    expect(recorders[0].start).toMatchObject({
+    expect(recorders[0]!.start).toMatchObject({
       conversationId: "conv-42", agentName: "pi", agentVersion: "2.0.0",
       requestModel: "claude-sonnet-4-20250514", requestProvider: "anthropic",
     });
@@ -376,8 +382,8 @@ describe("emitToolSpans", () => {
       agentName: "pi", contentCapture: true, redactor: new Redactor(),
     });
 
-    expect(recorders[0].result?.arguments).toBe('{"cmd":"ls"}');
-    expect(recorders[0].result?.result).toBe("file.txt");
+    expect(recorders[0]!.result?.arguments).toBe('{"cmd":"ls"}');
+    expect(recorders[0]!.result?.result).toBe("file.txt");
   });
 
   it("omits content when contentCapture is off", () => {
@@ -392,8 +398,8 @@ describe("emitToolSpans", () => {
       agentName: "pi", contentCapture: false,
     });
 
-    expect(recorders[0].result?.arguments).toBeUndefined();
-    expect(recorders[0].result?.result).toBeUndefined();
+    expect(recorders[0]!.result?.arguments).toBeUndefined();
+    expect(recorders[0]!.result?.result).toBeUndefined();
   });
 
   it("marks error tool executions", () => {
@@ -402,7 +408,7 @@ describe("emitToolSpans", () => {
       makePiTiming({ toolCallId: "c1", isError: true }),
     ], { agentName: "pi", contentCapture: false });
 
-    expect(recorders[0].callError).toBeInstanceOf(Error);
+    expect(recorders[0]!.callError).toBeInstanceOf(Error);
   });
 
   it("uses real start/end times", () => {
@@ -411,8 +417,8 @@ describe("emitToolSpans", () => {
       makePiTiming({ startedAt: 1000, completedAt: 5000 }),
     ], { agentName: "pi", contentCapture: false });
 
-    expect(recorders[0].start).toMatchObject({ startedAt: new Date(1000) });
-    expect(recorders[0].result?.completedAt).toEqual(new Date(5000));
+    expect(recorders[0]!.start).toMatchObject({ startedAt: new Date(1000) });
+    expect(recorders[0]!.result?.completedAt).toEqual(new Date(5000));
   });
 
   it("redacts secrets in arguments and results", () => {
@@ -429,8 +435,8 @@ describe("emitToolSpans", () => {
       agentName: "pi", contentCapture: true, redactor: new Redactor(),
     });
 
-    const args = recorders[0].result?.arguments as string;
-    const result = recorders[0].result?.result as string;
+    const args = recorders[0]!.result?.arguments as string;
+    const result = recorders[0]!.result?.result as string;
     expect(args).not.toContain(secret);
     expect(args).toContain("[REDACTED:");
     expect(result).not.toContain(secret);
