@@ -170,12 +170,21 @@ export default function (pi: ExtensionAPI) {
       const contentCapture = config.contentCapture;
       const toolDefs = mapToolNames(turnToolTimings);
 
+      // Ensure startedAt <= completedAt (msg.timestamp). The provider sets
+      // msg.timestamp via Date.now() when creating the message object, which
+      // is normally after turn_start, but clock adjustments can invert them.
+      const completedAtMs = msg.timestamp;
+      const startedAtMs = Math.min(
+        turnStartTime || completedAtMs,
+        completedAtMs,
+      );
+
       const seed = mapGenerationStart(
         msg,
         conversationId,
         config.agentName,
         config.agentVersion,
-        turnStartTime || msg.timestamp,
+        startedAtMs,
         toolDefs.length > 0 ? toolDefs : undefined,
       );
 

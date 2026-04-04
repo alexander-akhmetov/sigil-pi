@@ -116,6 +116,50 @@ describe("extension lifecycle", () => {
     expect(recorder.setCallError).not.toHaveBeenCalled();
   });
 
+  it("clamps startedAt when msg.timestamp precedes turnStartTime", async () => {
+    let capturedSeed: any;
+    const recorder = {
+      setResult: vi.fn(),
+      setCallError: vi.fn(),
+    };
+
+    const sigil: SigilLike = {
+      startGeneration: vi.fn(async (seed, run) => {
+        capturedSeed = seed;
+        await run(recorder);
+      }),
+      shutdown: vi.fn(async () => {}),
+    };
+
+    loadConfigMock.mockResolvedValue({
+      enabled: true,
+      endpoint: "http://localhost:8080/api/v1/generations:export",
+      auth: { mode: "none" },
+      agentName: "pi",
+      contentCapture: false,
+    });
+    createSigilClientMock.mockReturnValue(sigil);
+
+    const pi = new FakePi();
+    registerExtension(pi as any);
+
+    await pi.emit("session_start");
+    await pi.emit("turn_start");
+
+    // Simulate msg.timestamp that is earlier than turnStartTime
+    // (can happen with clock adjustments)
+    const msg = assistantMessage();
+    msg.timestamp = Date.now() - 5000;
+
+    await pi.emit("turn_end", { message: msg, toolResults: [] });
+
+    expect(sigil.startGeneration).toHaveBeenCalledTimes(1);
+    // startedAt must be <= completedAt
+    const startedAt = capturedSeed.startedAt.getTime();
+    const completedAt = msg.timestamp;
+    expect(startedAt).toBeLessThanOrEqual(completedAt);
+  });
+
   it("swallows sigil failures instead of throwing", async () => {
     const sigil: SigilLike = {
       startGeneration: vi.fn(async () => {
