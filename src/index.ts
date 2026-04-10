@@ -24,9 +24,7 @@ function detectPiVersion(): string | undefined {
   try {
     // Resolve an exported subpath via ESM resolution, then walk up to package.json.
     // createRequire won't work here: pi's package.json uses "import"-only exports.
-    const resolved = import.meta.resolve(
-      "@mariozechner/pi-coding-agent/hooks",
-    );
+    const resolved = import.meta.resolve("@mariozechner/pi-coding-agent/hooks");
     let dir = dirname(fileURLToPath(resolved));
     for (let i = 0; i < 5; i++) {
       try {
