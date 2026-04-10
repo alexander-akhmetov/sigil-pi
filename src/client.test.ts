@@ -26,7 +26,9 @@ function makeConfig(overrides?: Partial<SigilPiConfig>): SigilPiConfig {
 describe("createSigilClient", () => {
   beforeEach(() => {
     SigilClientMock.mockReset();
-    SigilClientMock.mockImplementation(() => ({}));
+    SigilClientMock.mockImplementation(function () {
+      return {};
+    });
   });
 
   it("creates sdk client with tenant auth", () => {
@@ -72,7 +74,7 @@ describe("createSigilClient", () => {
   });
 
   it("returns null when sdk constructor throws", () => {
-    SigilClientMock.mockImplementationOnce(() => {
+    SigilClientMock.mockImplementationOnce(function () {
       throw new Error("boom");
     });
 
