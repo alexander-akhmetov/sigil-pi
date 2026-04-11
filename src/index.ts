@@ -286,41 +286,54 @@ export function emitToolSpans(
     resultMap.set(tr.toolCallId, { content: text, isError: tr.isError });
   }
 
+  const includeContent = opts.contentCapture && !!opts.redactor;
+
   for (const timing of timings) {
-    const toolRec = client.startToolExecution({
-      toolName: timing.toolName,
-      toolCallId: timing.toolCallId,
-      toolType: "function",
-      conversationId: opts.conversationId,
-      agentName: opts.agentName,
-      agentVersion: opts.agentVersion,
-      requestModel: msg.model,
-      requestProvider: msg.provider,
-      startedAt: new Date(timing.startedAt),
-      includeContent: opts.contentCapture,
-    });
+    try {
+      const toolRec = client.startToolExecution({
+        toolName: timing.toolName,
+        toolCallId: timing.toolCallId,
+        toolType: "function",
+        conversationId: opts.conversationId,
+        agentName: opts.agentName,
+        agentVersion: opts.agentVersion,
+        requestModel: msg.model,
+        requestProvider: msg.provider,
+        startedAt: new Date(timing.startedAt),
+        includeContent,
+      });
 
-    const end: { arguments?: unknown; result?: unknown; completedAt: Date } = {
-      completedAt: new Date(timing.completedAt),
-    };
+      const end: {
+        arguments?: unknown;
+        result?: unknown;
+        completedAt: Date;
+      } = {
+        completedAt: new Date(timing.completedAt),
+      };
 
-    if (opts.contentCapture && opts.redactor) {
-      const args = argsMap.get(timing.toolCallId);
-      if (args) {
-        end.arguments = opts.redactor.redact(JSON.stringify(args));
+      if (includeContent && opts.redactor) {
+        const args = argsMap.get(timing.toolCallId);
+        if (args) {
+          end.arguments = opts.redactor.redact(JSON.stringify(args));
+        }
+        const tr = resultMap.get(timing.toolCallId);
+        if (tr) {
+          end.result = opts.redactor.redact(tr.content);
+        }
       }
-      const tr = resultMap.get(timing.toolCallId);
-      if (tr) {
-        end.result = opts.redactor.redact(tr.content);
+
+      if (timing.isError) {
+        toolRec.setCallError(new Error("tool returned error"));
       }
-    }
 
-    if (timing.isError) {
-      toolRec.setCallError(new Error("tool returned error"));
+      toolRec.setResult(end);
+      toolRec.end();
+    } catch (err) {
+      console.warn(
+        `[sigil-pi] failed to emit tool span for ${timing.toolName}:`,
+        err,
+      );
     }
-
-    toolRec.setResult(end);
-    toolRec.end();
   }
 }
 
