@@ -232,7 +232,13 @@ function resolveAuth(file: Record<string, unknown>): SigilAuthConfig | null {
 
 export function resolveEnvVars(value: string): string {
   return value.replace(/\$\{(\w+)\}/g, (_match, name) => {
-    return process.env[name as string] ?? "";
+    const resolved = process.env[name as string];
+    if (resolved === undefined) {
+      console.warn(
+        `[sigil-pi] env var \${${name}} is not set, resolving to empty string`,
+      );
+    }
+    return resolved ?? "";
   });
 }
 
