@@ -249,13 +249,7 @@ function env(key: string): string | undefined {
 
 function envBool(key: string): boolean | undefined {
   const v = env(key);
-  if (v === undefined) return undefined;
-
-  const normalized = v.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-
-  return undefined;
+  return v !== undefined ? toBool(v) : undefined;
 }
 
 function asString(v: unknown): string | undefined {
@@ -291,8 +285,5 @@ function isMissingFileError(err: unknown): boolean {
 }
 
 function disabledConfig(): SigilPiConfig {
-  return {
-    ...DISABLED,
-    auth: { mode: "none" },
-  };
+  return { ...DISABLED };
 }
