@@ -1,4 +1,5 @@
 import type {
+  ContentCaptureMode,
   GenerationResult,
   GenerationStart,
   Message,
@@ -87,7 +88,7 @@ export function mapGenerationResult(
   msg: PiAssistantMessage,
   toolResults: PiToolResult[],
   toolTimings: ToolTiming[],
-  contentCapture: boolean,
+  contentCapture: ContentCaptureMode,
   redactor: Redactor | undefined,
 ): GenerationResult {
   const result: GenerationResult = {
@@ -110,13 +111,11 @@ export function mapGenerationResult(
 
   const output: Message[] = [];
 
-  if (contentCapture && redactor) {
+  if (contentCapture !== "metadata_only" && redactor) {
     output.push(
       ...mapAssistantOutput(msg, redactor),
       ...mapToolResultsOutput(toolResults, redactor),
     );
-  } else if (toolTimings.length > 0) {
-    output.push(...mapToolTimingsToOutput(toolTimings));
   }
 
   if (output.length > 0) {
@@ -137,36 +136,6 @@ export function mapToolNames(toolTimings: ToolTiming[]): ToolDefinition[] {
     }
   }
   return defs;
-}
-
-/** Map tool timings to output messages (metadata only — name + duration). */
-function mapToolTimingsToOutput(timings: ToolTiming[]): Message[] {
-  const callParts: NonNullable<Message["parts"]> = [];
-  const resultParts: NonNullable<Message["parts"]> = [];
-
-  for (const t of timings) {
-    callParts.push({
-      type: "tool_call",
-      toolCall: { id: t.toolCallId, name: t.toolName },
-    });
-
-    const durationMs = t.completedAt - t.startedAt;
-    resultParts.push({
-      type: "tool_result",
-      toolResult: {
-        toolCallId: t.toolCallId,
-        name: t.toolName,
-        content: `${durationMs}ms`,
-        isError: t.isError,
-      },
-    });
-  }
-
-  if (callParts.length === 0) return [];
-  return [
-    { role: "assistant", parts: callParts },
-    { role: "tool", parts: resultParts },
-  ];
 }
 
 /** Map assistant message content blocks to Sigil output messages (with redaction). */

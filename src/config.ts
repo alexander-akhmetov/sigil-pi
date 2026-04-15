@@ -1,3 +1,4 @@
+import type { ContentCaptureMode } from "@grafana/sigil-sdk-js";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ export interface SigilPiConfig {
   auth: SigilAuthConfig;
   agentName: string;
   agentVersion?: string;
-  contentCapture: boolean;
+  contentCapture: ContentCaptureMode;
   debug: boolean;
   otlp?: OtlpConfig;
 }
@@ -31,7 +32,7 @@ const DISABLED: Readonly<SigilPiConfig> = {
   endpoint: "",
   auth: { mode: "none" },
   agentName: "pi",
-  contentCapture: false,
+  contentCapture: "metadata_only",
   debug: false,
 };
 
@@ -90,8 +91,7 @@ export function resolveConfig(file: Record<string, unknown>): SigilPiConfig {
   const agentVersion =
     configuredAgentVersion.length > 0 ? configuredAgentVersion : undefined;
 
-  const contentCapture =
-    envBool("SIGIL_PI_CONTENT_CAPTURE") ?? toBool(file.contentCapture) ?? false;
+  const contentCapture = resolveContentCapture(file);
 
   const debug = envBool("SIGIL_PI_DEBUG") ?? toBool(file.debug) ?? false;
 
@@ -157,6 +157,43 @@ function resolveOtlp(file: Record<string, unknown>): OtlpConfig | undefined {
   }
 
   return { endpoint, headers };
+}
+
+const VALID_CAPTURE_MODES: ContentCaptureMode[] = [
+  "full",
+  "no_tool_content",
+  "metadata_only",
+];
+
+function resolveContentCapture(
+  file: Record<string, unknown>,
+): ContentCaptureMode {
+  const envVal = env("SIGIL_PI_CONTENT_CAPTURE");
+  if (envVal !== undefined) {
+    return parseContentCaptureMode(envVal);
+  }
+  if (file.contentCapture !== undefined) {
+    if (typeof file.contentCapture === "boolean") {
+      return file.contentCapture ? "full" : "metadata_only";
+    }
+    if (typeof file.contentCapture === "string") {
+      return parseContentCaptureMode(file.contentCapture);
+    }
+  }
+  return "metadata_only";
+}
+
+function parseContentCaptureMode(value: string): ContentCaptureMode {
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return "full";
+  if (["0", "false", "no", "off"].includes(normalized)) return "metadata_only";
+  if (VALID_CAPTURE_MODES.includes(normalized as ContentCaptureMode)) {
+    return normalized as ContentCaptureMode;
+  }
+  console.warn(
+    `[sigil-pi] unsupported contentCapture value "${value}", defaulting to metadata_only`,
+  );
+  return "metadata_only";
 }
 
 function resolveAuth(file: Record<string, unknown>): SigilAuthConfig | null {

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SigilClient } from "@grafana/sigil-sdk-js";
+import type { ContentCaptureMode, SigilClient } from "@grafana/sigil-sdk-js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createSigilClient } from "./client.js";
 import type { SigilPiConfig } from "./config.js";
@@ -123,9 +123,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      if (config.contentCapture) {
-        redactor = new Redactor();
-      }
+      redactor = new Redactor();
 
       debugLog(`enabled, endpoint=${config.endpoint} auth=${config.auth.mode}`);
     } catch (err) {
@@ -261,7 +259,7 @@ export function emitToolSpans(
     conversationId?: string;
     agentName: string;
     agentVersion?: string;
-    contentCapture: boolean;
+    contentCapture: ContentCaptureMode;
     redactor?: Redactor;
   },
 ): void {
@@ -286,7 +284,7 @@ export function emitToolSpans(
     resultMap.set(tr.toolCallId, { content: text, isError: tr.isError });
   }
 
-  const includeContent = opts.contentCapture && !!opts.redactor;
+  const includeContent = opts.contentCapture === "full" && !!opts.redactor;
 
   for (const timing of timings) {
     try {
@@ -300,7 +298,7 @@ export function emitToolSpans(
         requestModel: msg.model,
         requestProvider: msg.provider,
         startedAt: new Date(timing.startedAt),
-        includeContent,
+        contentCapture: opts.contentCapture,
       });
 
       const end: {

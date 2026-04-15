@@ -19,8 +19,8 @@
   },
   "devDependencies": {
     "@grafana/sigil-sdk-js": "file:vendor/sigil-sdk-js",
-    "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.214.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",

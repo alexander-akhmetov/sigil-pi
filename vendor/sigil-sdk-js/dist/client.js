@@ -1,0 +1,1502 @@
+import { metrics, SpanKind, SpanStatusCode, trace, } from '@opentelemetry/api';
+import { defaultLogger, mergeConfig } from './config.js';
+import { callContentCaptureResolver, resolveClientContentCaptureMode, resolveContentCaptureMode, shouldIncludeToolContent, stampContentCaptureMetadata, stripContent, } from './content_capture.js';
+import { agentNameFromContext, agentVersionFromContext, conversationIdFromContext, conversationTitleFromContext, userIdFromContext, } from './context.js';
+import { createDefaultGenerationExporter } from './exporters/default.js';
+import { asError, cloneArtifact, cloneEmbeddingResult, cloneEmbeddingStart, cloneGeneration, cloneGenerationResult, cloneGenerationStart, cloneMessage, cloneModelRef, cloneToolDefinition, cloneToolExecution, cloneToolExecutionResult, cloneToolExecutionStart, defaultOperationNameForMode, defaultSleep, encodedSizeBytes, maybeUnref, newLocalID, validateEmbeddingResult, validateEmbeddingStart, validateGeneration, validateToolExecution, } from './utils.js';
+const spanAttrGenerationID = 'sigil.generation.id';
+const spanAttrSDKName = 'sigil.sdk.name';
+const spanAttrFrameworkRunID = 'sigil.framework.run_id';
+const spanAttrFrameworkThreadID = 'sigil.framework.thread_id';
+const spanAttrFrameworkParentRunID = 'sigil.framework.parent_run_id';
+const spanAttrFrameworkComponentName = 'sigil.framework.component_name';
+const spanAttrFrameworkRunType = 'sigil.framework.run_type';
+const spanAttrFrameworkRetryAttempt = 'sigil.framework.retry_attempt';
+const spanAttrFrameworkLangGraphNode = 'sigil.framework.langgraph.node';
+const spanAttrFrameworkEventID = 'sigil.framework.event_id';
+const spanAttrConversationID = 'gen_ai.conversation.id';
+const spanAttrConversationTitle = 'sigil.conversation.title';
+const spanAttrUserID = 'user.id';
+const spanAttrAgentName = 'gen_ai.agent.name';
+const spanAttrAgentVersion = 'gen_ai.agent.version';
+const spanAttrErrorType = 'error.type';
+const spanAttrErrorCategory = 'error.category';
+const spanAttrOperationName = 'gen_ai.operation.name';
+const spanAttrProviderName = 'gen_ai.provider.name';
+const spanAttrRequestModel = 'gen_ai.request.model';
+const spanAttrRequestMaxTokens = 'gen_ai.request.max_tokens';
+const spanAttrRequestTemperature = 'gen_ai.request.temperature';
+const spanAttrRequestTopP = 'gen_ai.request.top_p';
+const spanAttrRequestToolChoice = 'sigil.gen_ai.request.tool_choice';
+const spanAttrRequestThinkingEnabled = 'sigil.gen_ai.request.thinking.enabled';
+const spanAttrRequestThinkingBudget = 'sigil.gen_ai.request.thinking.budget_tokens';
+const spanAttrResponseID = 'gen_ai.response.id';
+const spanAttrResponseModel = 'gen_ai.response.model';
+const spanAttrFinishReasons = 'gen_ai.response.finish_reasons';
+const spanAttrInputTokens = 'gen_ai.usage.input_tokens';
+const spanAttrOutputTokens = 'gen_ai.usage.output_tokens';
+const spanAttrEmbeddingInputCount = 'gen_ai.embeddings.input_count';
+const spanAttrEmbeddingInputTexts = 'gen_ai.embeddings.input_texts';
+const spanAttrEmbeddingDimCount = 'gen_ai.embeddings.dimension.count';
+const spanAttrRequestEncodingFormats = 'gen_ai.request.encoding_formats';
+const spanAttrCacheReadTokens = 'gen_ai.usage.cache_read_input_tokens';
+const spanAttrCacheWriteTokens = 'gen_ai.usage.cache_write_input_tokens';
+const spanAttrCacheCreationTokens = 'gen_ai.usage.cache_creation_input_tokens';
+const spanAttrReasoningTokens = 'gen_ai.usage.reasoning_tokens';
+const spanAttrToolName = 'gen_ai.tool.name';
+const spanAttrToolCallID = 'gen_ai.tool.call.id';
+const spanAttrToolType = 'gen_ai.tool.type';
+const spanAttrToolDescription = 'gen_ai.tool.description';
+const spanAttrToolCallArguments = 'gen_ai.tool.call.arguments';
+const spanAttrToolCallResult = 'gen_ai.tool.call.result';
+const maxRatingConversationIdLen = 255;
+const maxRatingIdLen = 128;
+const maxRatingGenerationIdLen = 255;
+const maxRatingActorIdLen = 255;
+const maxRatingSourceLen = 64;
+const maxRatingCommentBytes = 4096;
+const maxRatingMetadataBytes = 16 * 1024;
+const metricOperationDuration = 'gen_ai.client.operation.duration';
+const metricTokenUsage = 'gen_ai.client.token.usage';
+const metricTimeToFirstToken = 'gen_ai.client.time_to_first_token';
+const metricToolCallsPerOperation = 'gen_ai.client.tool_calls_per_operation';
+const metricAttrTokenType = 'gen_ai.token.type';
+const metricTokenTypeInput = 'input';
+const metricTokenTypeOutput = 'output';
+const metricTokenTypeCacheRead = 'cache_read';
+const metricTokenTypeCacheWrite = 'cache_write';
+const metricTokenTypeCacheCreation = 'cache_creation';
+const metricTokenTypeReasoning = 'reasoning';
+const instrumentationName = 'github.com/grafana/sigil/sdks/js';
+const sdkName = 'sdk-js';
+const defaultEmbeddingOperationName = 'embeddings';
+const metadataUserIDKey = 'sigil.user.id';
+const metadataLegacyUserIDKey = 'user.id';
+export class SigilClient {
+    config;
+    nowFn;
+    sleepFn;
+    logger;
+    generationExporter;
+    tracer;
+    meter;
+    operationDurationHistogram;
+    tokenUsageHistogram;
+    ttftHistogram;
+    toolCallsHistogram;
+    generations = [];
+    toolExecutions = [];
+    pendingGenerations = [];
+    flushPromise;
+    flushRequested = false;
+    flushTimer;
+    shutdownPromise;
+    shuttingDown = false;
+    closed = false;
+    /**
+     * Creates a Sigil SDK client.
+     *
+     * `inputConfig` is merged with defaults.
+     */
+    constructor(inputConfig = {}) {
+        this.config = mergeConfig(inputConfig);
+        this.nowFn = this.config.now ?? (() => new Date());
+        this.sleepFn = this.config.sleep ?? defaultSleep;
+        this.logger = this.config.logger ?? defaultLogger;
+        this.generationExporter =
+            this.config.generationExporter ?? createDefaultGenerationExporter(this.config.generationExport);
+        this.tracer = this.config.tracer ?? trace.getTracer(instrumentationName);
+        this.meter = this.config.meter ?? metrics.getMeter(instrumentationName);
+        this.operationDurationHistogram = this.meter.createHistogram(metricOperationDuration, { unit: 's' });
+        this.tokenUsageHistogram = this.meter.createHistogram(metricTokenUsage, { unit: 'token' });
+        this.ttftHistogram = this.meter.createHistogram(metricTimeToFirstToken, { unit: 's' });
+        this.toolCallsHistogram = this.meter.createHistogram(metricToolCallsPerOperation, { unit: 'count' });
+        if (this.config.generationExport.flushIntervalMs > 0) {
+            this.flushTimer = setInterval(() => {
+                this.triggerAsyncFlush();
+            }, this.config.generationExport.flushIntervalMs);
+            maybeUnref(this.flushTimer);
+        }
+    }
+    startGeneration(start, callback) {
+        return this.startGenerationWithMode(start, 'SYNC', callback);
+    }
+    startStreamingGeneration(start, callback) {
+        return this.startGenerationWithMode(start, 'STREAM', callback);
+    }
+    startEmbedding(start, callback) {
+        this.assertOpen();
+        const seed = cloneEmbeddingStart(start);
+        if (!notEmpty(seed.agentName)) {
+            seed.agentName = agentNameFromContext();
+        }
+        if (!notEmpty(seed.agentVersion)) {
+            seed.agentVersion = agentVersionFromContext();
+        }
+        const recorder = new EmbeddingRecorderImpl(this, seed);
+        if (callback === undefined) {
+            return recorder;
+        }
+        return runWithRecorder(recorder, callback);
+    }
+    startToolExecution(start, callback) {
+        this.assertOpen();
+        const recorder = start.toolName.trim().length === 0 ? new NoopToolExecutionRecorder() : new ToolExecutionRecorderImpl(this, start);
+        if (callback === undefined) {
+            return recorder;
+        }
+        return runWithRecorder(recorder, callback);
+    }
+    /** Submits a user-facing conversation rating through Sigil HTTP API. */
+    async submitConversationRating(conversationId, input) {
+        this.assertOpen();
+        const normalizedConversationId = conversationId.trim();
+        if (normalizedConversationId.length === 0) {
+            throw new Error('sigil conversation rating validation failed: conversationId is required');
+        }
+        if (normalizedConversationId.length > maxRatingConversationIdLen) {
+            throw new Error('sigil conversation rating validation failed: conversationId is too long');
+        }
+        const normalizedInput = normalizeConversationRatingInput(input);
+        const endpoint = buildConversationRatingEndpoint(this.config.api.endpoint, this.config.generationExport.insecure, normalizedConversationId);
+        const requestBody = {
+            rating_id: normalizedInput.ratingId,
+            rating: normalizedInput.rating,
+            comment: normalizedInput.comment,
+            metadata: normalizedInput.metadata,
+            generation_id: normalizedInput.generationId,
+            rater_id: normalizedInput.raterId,
+            source: normalizedInput.source,
+        };
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                ...this.config.generationExport.headers,
+            },
+            body: JSON.stringify(requestBody),
+        });
+        const responseText = (await response.text()).trim();
+        if (response.status === 400) {
+            throw new Error(`sigil conversation rating validation failed: ${ratingErrorText(responseText, response.status)}`);
+        }
+        if (response.status === 409) {
+            throw new Error(`sigil conversation rating conflict: ${ratingErrorText(responseText, response.status)}`);
+        }
+        if (!response.ok) {
+            throw new Error(`sigil conversation rating transport failed: status ${response.status}: ${ratingErrorText(responseText, response.status)}`);
+        }
+        if (responseText.length === 0) {
+            throw new Error('sigil conversation rating transport failed: empty response payload');
+        }
+        let payload;
+        try {
+            payload = JSON.parse(responseText);
+        }
+        catch (error) {
+            throw new Error(`sigil conversation rating transport failed: invalid JSON response: ${asError(error).message}`);
+        }
+        return parseSubmitConversationRatingResponse(payload);
+    }
+    /** Forces immediate drain of queued generation exports. */
+    async flush() {
+        this.assertOpen();
+        await this.flushInternal();
+    }
+    /** Flushes pending generations and shuts down the generation exporter. */
+    async shutdown() {
+        if (this.shutdownPromise !== undefined) {
+            await this.shutdownPromise;
+            return;
+        }
+        this.shuttingDown = true;
+        this.shutdownPromise = (async () => {
+            this.stopFlushTimer();
+            try {
+                await this.flushInternal();
+            }
+            catch (error) {
+                this.logWarn('sigil generation export flush on shutdown failed', error);
+            }
+            try {
+                await this.generationExporter.shutdown?.();
+            }
+            catch (error) {
+                this.logWarn('sigil generation exporter shutdown failed', error);
+            }
+            this.closed = true;
+        })();
+        await this.shutdownPromise;
+    }
+    /** Returns a cloned in-memory snapshot for debugging and tests. */
+    debugSnapshot() {
+        return {
+            generations: this.generations.map(cloneGeneration),
+            toolExecutions: this.toolExecutions.map(cloneToolExecution),
+            queueSize: this.pendingGenerations.length,
+        };
+    }
+    internalNow() {
+        return this.nowFn();
+    }
+    internalRecordGeneration(generation) {
+        this.generations.push(cloneGeneration(generation));
+    }
+    internalRecordToolExecution(toolExecution) {
+        this.toolExecutions.push(cloneToolExecution(toolExecution));
+    }
+    internalEnqueueGeneration(generation) {
+        if (this.shuttingDown || this.closed) {
+            throw new Error('sigil client is shutdown');
+        }
+        const payloadMaxBytes = this.config.generationExport.payloadMaxBytes;
+        if (payloadMaxBytes > 0) {
+            const payloadBytes = encodedSizeBytes(generation);
+            if (payloadBytes > payloadMaxBytes) {
+                throw new Error(`generation payload exceeds max bytes (${payloadBytes} > ${payloadMaxBytes})`);
+            }
+        }
+        const queueSize = Math.max(1, this.config.generationExport.queueSize);
+        if (this.pendingGenerations.length >= queueSize) {
+            throw new Error('generation queue is full');
+        }
+        this.pendingGenerations.push(cloneGeneration(generation));
+        const batchSize = Math.max(1, this.config.generationExport.batchSize);
+        if (this.pendingGenerations.length >= batchSize) {
+            this.triggerAsyncFlush();
+        }
+    }
+    internalLogWarn(message, error) {
+        this.logWarn(message, error);
+    }
+    internalResolveGenerationContentCaptureMode(seed) {
+        const resolverMode = callContentCaptureResolver(this.config.contentCaptureResolver, seed.metadata);
+        const clientMode = resolveClientContentCaptureMode(resolveContentCaptureMode(resolverMode, this.config.contentCapture));
+        return resolveContentCaptureMode(seed.contentCapture ?? 'default', clientMode);
+    }
+    internalResolveToolIncludeContent(seed) {
+        const resolverMode = callContentCaptureResolver(this.config.contentCaptureResolver, undefined);
+        return shouldIncludeToolContent(seed.contentCapture ?? 'default', this.config.contentCapture, resolverMode, seed.includeContent ?? false);
+    }
+    internalStartGenerationSpan(seed, mode, startedAt) {
+        const operationName = seed.operationName ?? defaultOperationNameForMode(mode);
+        const span = this.tracer.startSpan(generationSpanName(operationName, seed.model.name), {
+            kind: SpanKind.CLIENT,
+            startTime: startedAt,
+        });
+        setGenerationSpanAttributes(span, {
+            id: seed.id,
+            conversationId: seed.conversationId,
+            conversationTitle: seed.conversationTitle,
+            userId: seed.userId,
+            agentName: seed.agentName,
+            agentVersion: seed.agentVersion,
+            operationName,
+            model: seed.model,
+            maxTokens: seed.maxTokens,
+            temperature: seed.temperature,
+            topP: seed.topP,
+            toolChoice: seed.toolChoice,
+            thinkingEnabled: seed.thinkingEnabled,
+            metadata: seed.metadata,
+        });
+        return span;
+    }
+    internalStartEmbeddingSpan(seed, startedAt) {
+        const span = this.tracer.startSpan(embeddingSpanName(seed.model.name), {
+            kind: SpanKind.CLIENT,
+            startTime: startedAt,
+        });
+        setEmbeddingStartSpanAttributes(span, seed);
+        return span;
+    }
+    internalStartToolExecutionSpan(seed, startedAt) {
+        const span = this.tracer.startSpan(toolSpanName(seed.toolName), {
+            kind: SpanKind.INTERNAL,
+            startTime: startedAt,
+        });
+        setToolSpanAttributes(span, seed);
+        return span;
+    }
+    internalApplyTraceContextFromSpan(span, generation) {
+        const context = span.spanContext();
+        if (context.traceId.length > 0) {
+            generation.traceId = context.traceId;
+        }
+        if (context.spanId.length > 0) {
+            generation.spanId = context.spanId;
+        }
+    }
+    internalSyncGenerationSpan(span, generation) {
+        setGenerationSpanAttributes(span, generation);
+    }
+    internalClearSpanConversationTitle(span) {
+        span.setAttribute(spanAttrConversationTitle, '');
+    }
+    internalFinalizeGenerationSpan(span, generation, callError, validationError, enqueueError, firstTokenAt, precomputedCallErrorCategory) {
+        span.updateName(generationSpanName(generation.operationName, generation.model.name));
+        if (callError !== undefined) {
+            span.recordException(new Error(callError));
+        }
+        if (validationError !== undefined) {
+            span.recordException(validationError);
+        }
+        if (enqueueError !== undefined) {
+            span.recordException(enqueueError);
+        }
+        let errorType = '';
+        let errorCategory = '';
+        if (callError !== undefined) {
+            errorType = 'provider_call_error';
+            errorCategory = precomputedCallErrorCategory ?? errorCategoryFromError(callError, true);
+            span.setAttribute(spanAttrErrorType, errorType);
+            span.setAttribute(spanAttrErrorCategory, errorCategory);
+            span.setStatus({ code: SpanStatusCode.ERROR, message: callError });
+        }
+        else if (validationError !== undefined) {
+            errorType = 'validation_error';
+            errorCategory = 'sdk_error';
+            span.setAttribute(spanAttrErrorType, errorType);
+            span.setAttribute(spanAttrErrorCategory, errorCategory);
+            span.setStatus({ code: SpanStatusCode.ERROR, message: validationError.message });
+        }
+        else if (enqueueError !== undefined) {
+            errorType = 'enqueue_error';
+            errorCategory = 'sdk_error';
+            span.setAttribute(spanAttrErrorType, errorType);
+            span.setAttribute(spanAttrErrorCategory, errorCategory);
+            span.setStatus({ code: SpanStatusCode.ERROR, message: enqueueError.message });
+        }
+        else {
+            span.setStatus({ code: SpanStatusCode.OK });
+        }
+        this.recordGenerationMetrics(generation, errorType, errorCategory, firstTokenAt);
+        span.end(generation.completedAt);
+    }
+    internalFinalizeEmbeddingSpan(span, seed, result, hasResult, callError, localError, startedAt, completedAt) {
+        span.updateName(embeddingSpanName(seed.model.name));
+        setEmbeddingEndSpanAttributes(span, result, hasResult, this.config.embeddingCapture);
+        if (callError !== undefined) {
+            span.recordException(callError);
+        }
+        if (localError !== undefined) {
+            span.recordException(localError);
+        }
+        let errorType = '';
+        let errorCategory = '';
+        if (callError !== undefined) {
+            errorType = 'provider_call_error';
+            errorCategory = errorCategoryFromError(callError, true);
+            span.setStatus({ code: SpanStatusCode.ERROR, message: callError.message });
+        }
+        else if (localError !== undefined) {
+            errorType = 'validation_error';
+            errorCategory = 'sdk_error';
+            span.setStatus({ code: SpanStatusCode.ERROR, message: localError.message });
+        }
+        else {
+            span.setStatus({ code: SpanStatusCode.OK });
+        }
+        if (errorType.length > 0) {
+            span.setAttribute(spanAttrErrorType, errorType);
+            span.setAttribute(spanAttrErrorCategory, errorCategory);
+        }
+        this.recordEmbeddingMetrics(seed, result, startedAt, completedAt, errorType, errorCategory);
+        span.end(completedAt);
+    }
+    internalFinalizeToolExecutionSpan(span, toolExecution, localError) {
+        setToolSpanAttributes(span, toolExecution);
+        if (toolExecution.includeContent) {
+            const argumentsResult = serializeToolContent(toolExecution.arguments);
+            if (argumentsResult.error !== undefined && localError === undefined) {
+                localError = argumentsResult.error;
+            }
+            else if (argumentsResult.value !== undefined) {
+                span.setAttribute(spanAttrToolCallArguments, argumentsResult.value);
+            }
+            const resultValue = serializeToolContent(toolExecution.result);
+            if (resultValue.error !== undefined && localError === undefined) {
+                localError = resultValue.error;
+            }
+            else if (resultValue.value !== undefined) {
+                span.setAttribute(spanAttrToolCallResult, resultValue.value);
+            }
+        }
+        if (toolExecution.callError !== undefined) {
+            span.recordException(new Error(toolExecution.callError));
+            span.setAttribute(spanAttrErrorType, 'tool_execution_error');
+            span.setAttribute(spanAttrErrorCategory, errorCategoryFromError(toolExecution.callError, true));
+            span.setStatus({ code: SpanStatusCode.ERROR, message: toolExecution.callError });
+        }
+        else if (localError !== undefined) {
+            span.recordException(localError);
+            span.setAttribute(spanAttrErrorType, 'tool_execution_error');
+            span.setAttribute(spanAttrErrorCategory, errorCategoryFromError(localError, true));
+            span.setStatus({ code: SpanStatusCode.ERROR, message: localError.message });
+        }
+        else {
+            span.setStatus({ code: SpanStatusCode.OK });
+        }
+        this.recordToolExecutionMetrics(toolExecution, localError ?? (toolExecution.callError !== undefined ? new Error(toolExecution.callError) : undefined));
+        span.end(toolExecution.completedAt);
+        return localError;
+    }
+    recordGenerationMetrics(generation, errorType, errorCategory, firstTokenAt) {
+        const startedMs = generation.startedAt.getTime();
+        const completedMs = generation.completedAt.getTime();
+        const durationSeconds = Math.max(0, (completedMs - startedMs) / 1_000);
+        this.operationDurationHistogram.record(durationSeconds, {
+            [spanAttrOperationName]: generation.operationName,
+            [spanAttrProviderName]: generation.model.provider,
+            [spanAttrRequestModel]: generation.model.name,
+            [spanAttrAgentName]: generation.agentName ?? '',
+            [spanAttrErrorType]: errorType,
+            [spanAttrErrorCategory]: errorCategory,
+        });
+        const usage = generation.usage;
+        if (usage !== undefined) {
+            this.recordTokenUsage(generation, metricTokenTypeInput, usage.inputTokens);
+            this.recordTokenUsage(generation, metricTokenTypeOutput, usage.outputTokens);
+            this.recordTokenUsage(generation, metricTokenTypeCacheRead, usage.cacheReadInputTokens);
+            this.recordTokenUsage(generation, metricTokenTypeCacheWrite, usage.cacheWriteInputTokens);
+            this.recordTokenUsage(generation, metricTokenTypeCacheCreation, usage.cacheCreationInputTokens);
+            this.recordTokenUsage(generation, metricTokenTypeReasoning, usage.reasoningTokens);
+        }
+        this.toolCallsHistogram.record(countToolCallParts(generation.output ?? []), {
+            [spanAttrProviderName]: generation.model.provider,
+            [spanAttrRequestModel]: generation.model.name,
+            [spanAttrAgentName]: generation.agentName ?? '',
+        });
+        if (generation.operationName === 'streamText' && firstTokenAt !== undefined) {
+            const ttftSeconds = (firstTokenAt.getTime() - startedMs) / 1_000;
+            if (ttftSeconds >= 0) {
+                this.ttftHistogram.record(ttftSeconds, {
+                    [spanAttrProviderName]: generation.model.provider,
+                    [spanAttrRequestModel]: generation.model.name,
+                    [spanAttrAgentName]: generation.agentName ?? '',
+                });
+            }
+        }
+    }
+    recordEmbeddingMetrics(seed, result, startedAt, completedAt, errorType, errorCategory) {
+        const durationSeconds = Math.max(0, (completedAt.getTime() - startedAt.getTime()) / 1_000);
+        this.operationDurationHistogram.record(durationSeconds, {
+            [spanAttrOperationName]: defaultEmbeddingOperationName,
+            [spanAttrProviderName]: seed.model.provider,
+            [spanAttrRequestModel]: seed.model.name,
+            [spanAttrAgentName]: seed.agentName ?? '',
+            [spanAttrErrorType]: errorType,
+            [spanAttrErrorCategory]: errorCategory,
+        });
+        if (result.inputTokens !== undefined && result.inputTokens !== 0) {
+            this.tokenUsageHistogram.record(result.inputTokens, {
+                [spanAttrOperationName]: defaultEmbeddingOperationName,
+                [spanAttrProviderName]: seed.model.provider,
+                [spanAttrRequestModel]: seed.model.name,
+                [spanAttrAgentName]: seed.agentName ?? '',
+                [metricAttrTokenType]: metricTokenTypeInput,
+            });
+        }
+    }
+    recordTokenUsage(generation, tokenType, value) {
+        if (value === undefined || value === 0) {
+            return;
+        }
+        this.tokenUsageHistogram.record(value, {
+            [spanAttrOperationName]: generation.operationName,
+            [spanAttrProviderName]: generation.model.provider,
+            [spanAttrRequestModel]: generation.model.name,
+            [spanAttrAgentName]: generation.agentName ?? '',
+            [metricAttrTokenType]: tokenType,
+        });
+    }
+    recordToolExecutionMetrics(toolExecution, finalError) {
+        const startedMs = toolExecution.startedAt.getTime();
+        const completedMs = toolExecution.completedAt.getTime();
+        const durationSeconds = Math.max(0, (completedMs - startedMs) / 1_000);
+        const errorType = finalError === undefined ? '' : 'tool_execution_error';
+        const errorCategory = finalError === undefined ? '' : errorCategoryFromError(finalError, true);
+        this.operationDurationHistogram.record(durationSeconds, {
+            [spanAttrOperationName]: 'execute_tool',
+            [spanAttrProviderName]: (toolExecution.requestProvider ?? '').trim(),
+            [spanAttrRequestModel]: (toolExecution.requestModel ?? '').trim(),
+            [spanAttrToolName]: toolExecution.toolName.trim(),
+            [spanAttrAgentName]: toolExecution.agentName ?? '',
+            [spanAttrErrorType]: errorType,
+            [spanAttrErrorCategory]: errorCategory,
+        });
+    }
+    assertOpen() {
+        if (this.shuttingDown || this.closed) {
+            throw new Error('sigil client is shutdown');
+        }
+    }
+    startGenerationWithMode(start, mode, callback) {
+        this.assertOpen();
+        const recorder = new GenerationRecorderImpl(this, start, mode);
+        if (callback === undefined) {
+            return recorder;
+        }
+        return runWithRecorder(recorder, callback);
+    }
+    triggerAsyncFlush() {
+        void this.flushInternal().catch((error) => {
+            this.logWarn('sigil generation export failed', error);
+        });
+    }
+    flushInternal() {
+        if (this.flushPromise !== undefined) {
+            this.flushRequested = true;
+            return this.flushPromise;
+        }
+        this.flushPromise = this.drainPendingGenerations().finally(() => {
+            this.flushPromise = undefined;
+        });
+        return this.flushPromise;
+    }
+    async drainPendingGenerations() {
+        do {
+            this.flushRequested = false;
+            while (this.pendingGenerations.length > 0) {
+                const batchSize = Math.max(1, this.config.generationExport.batchSize);
+                const batch = this.pendingGenerations.splice(0, batchSize).map(cloneGeneration);
+                await this.exportWithRetry(batch);
+            }
+        } while (this.flushRequested || this.pendingGenerations.length > 0);
+    }
+    async exportWithRetry(generations) {
+        const maxRetries = Math.max(0, this.config.generationExport.maxRetries);
+        const attempts = maxRetries + 1;
+        const baseBackoffMs = this.config.generationExport.initialBackoffMs > 0 ? this.config.generationExport.initialBackoffMs : 100;
+        const maxBackoffMs = this.config.generationExport.maxBackoffMs > 0 ? this.config.generationExport.maxBackoffMs : baseBackoffMs;
+        let backoffMs = baseBackoffMs;
+        let lastError;
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            try {
+                const response = await this.generationExporter.exportGenerations({
+                    generations: generations.map(cloneGeneration),
+                });
+                this.logRejectedResults(response.results);
+                return;
+            }
+            catch (error) {
+                lastError = asError(error);
+                if (attempt === attempts - 1) {
+                    break;
+                }
+                await this.sleepFn(backoffMs);
+                backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+            }
+        }
+        throw lastError ?? new Error('generation export failed');
+    }
+    logRejectedResults(results) {
+        for (const result of results) {
+            if (!result.accepted) {
+                this.logWarn(`sigil generation rejected id=${result.generationId}`, result.error);
+            }
+        }
+    }
+    stopFlushTimer() {
+        if (this.flushTimer !== undefined) {
+            clearInterval(this.flushTimer);
+            this.flushTimer = undefined;
+        }
+    }
+    logWarn(message, error) {
+        if (error === undefined) {
+            this.logger.warn?.(message);
+            return;
+        }
+        this.logger.warn?.(`${message}: ${asError(error).message}`);
+    }
+}
+class GenerationRecorderImpl {
+    client;
+    seed;
+    startedAt;
+    mode;
+    span;
+    contentCaptureMode;
+    ended = false;
+    result;
+    callError;
+    localError;
+    firstTokenAt;
+    constructor(client, seed, defaultMode) {
+        this.client = client;
+        this.seed = cloneGenerationStart(seed);
+        if (!notEmpty(this.seed.conversationId)) {
+            this.seed.conversationId = conversationIdFromContext();
+        }
+        if (!notEmpty(this.seed.conversationTitle)) {
+            this.seed.conversationTitle = conversationTitleFromContext();
+        }
+        if (!notEmpty(this.seed.userId)) {
+            this.seed.userId = userIdFromContext();
+        }
+        if (!notEmpty(this.seed.agentName)) {
+            this.seed.agentName = agentNameFromContext();
+        }
+        if (!notEmpty(this.seed.agentVersion)) {
+            this.seed.agentVersion = agentVersionFromContext();
+        }
+        if (!notEmpty(this.seed.operationName)) {
+            this.seed.operationName = defaultOperationNameForMode(this.seed.mode ?? defaultMode);
+        }
+        this.mode = this.seed.mode ?? defaultMode;
+        this.startedAt = this.seed.startedAt ?? this.client.internalNow();
+        this.contentCaptureMode = this.client.internalResolveGenerationContentCaptureMode(this.seed);
+        this.span = this.client.internalStartGenerationSpan(this.seed, this.mode, this.startedAt);
+    }
+    setResult(result) {
+        if (this.ended) {
+            return;
+        }
+        this.result = cloneGenerationResult(result);
+    }
+    setCallError(error) {
+        if (this.ended) {
+            return;
+        }
+        this.callError = asError(error).message;
+    }
+    setFirstTokenAt(firstTokenAt) {
+        if (this.ended) {
+            return;
+        }
+        if (!(firstTokenAt instanceof Date) || Number.isNaN(firstTokenAt.getTime())) {
+            return;
+        }
+        this.firstTokenAt = new Date(firstTokenAt);
+    }
+    end() {
+        if (this.ended) {
+            return;
+        }
+        this.ended = true;
+        const generation = {
+            id: this.seed.id ?? newLocalID('gen'),
+            conversationId: firstNonEmptyString(this.result?.conversationId, this.seed.conversationId),
+            conversationTitle: firstNonEmptyString(this.result?.conversationTitle, this.seed.conversationTitle),
+            userId: firstNonEmptyString(this.result?.userId, this.seed.userId),
+            agentName: firstNonEmptyString(this.result?.agentName, this.seed.agentName),
+            agentVersion: firstNonEmptyString(this.result?.agentVersion, this.seed.agentVersion),
+            mode: this.mode,
+            operationName: this.result?.operationName ?? this.seed.operationName ?? defaultOperationNameForMode(this.mode),
+            model: cloneModelRef(this.seed.model),
+            systemPrompt: this.seed.systemPrompt,
+            responseId: this.result?.responseId,
+            responseModel: this.result?.responseModel,
+            maxTokens: this.result?.maxTokens ?? this.seed.maxTokens,
+            temperature: this.result?.temperature ?? this.seed.temperature,
+            topP: this.result?.topP ?? this.seed.topP,
+            toolChoice: this.result?.toolChoice ?? this.seed.toolChoice,
+            thinkingEnabled: this.result?.thinkingEnabled ?? this.seed.thinkingEnabled,
+            parentGenerationIds: this.result?.parentGenerationIds?.length
+                ? [...this.result.parentGenerationIds]
+                : this.seed.parentGenerationIds?.length
+                    ? [...this.seed.parentGenerationIds]
+                    : undefined,
+            input: this.result?.input?.map(cloneMessage),
+            output: this.result?.output?.map(cloneMessage),
+            tools: this.result?.tools?.map(cloneToolDefinition) ?? this.seed.tools?.map(cloneToolDefinition),
+            usage: this.result?.usage ? { ...this.result.usage } : undefined,
+            stopReason: this.result?.stopReason,
+            startedAt: new Date(this.startedAt),
+            completedAt: new Date(this.result?.completedAt ?? this.client.internalNow()),
+            tags: mergeStringRecords(this.seed.tags, this.result?.tags),
+            metadata: mergeUnknownRecords(this.seed.metadata, this.result?.metadata),
+            artifacts: this.result?.artifacts?.map(cloneArtifact),
+            callError: this.callError,
+        };
+        generation.conversationTitle = firstNonEmptyString(generation.conversationTitle, metadataStringValue(generation.metadata, spanAttrConversationTitle))?.trim();
+        if (notEmpty(generation.conversationTitle)) {
+            if (generation.metadata === undefined) {
+                generation.metadata = {};
+            }
+            generation.metadata[spanAttrConversationTitle] = generation.conversationTitle;
+        }
+        generation.userId = firstNonEmptyString(generation.userId, metadataStringValue(generation.metadata, metadataUserIDKey), metadataStringValue(generation.metadata, metadataLegacyUserIDKey))?.trim();
+        if (notEmpty(generation.userId)) {
+            if (generation.metadata === undefined) {
+                generation.metadata = {};
+            }
+            generation.metadata[metadataUserIDKey] = generation.userId;
+        }
+        if (this.callError !== undefined) {
+            if (generation.metadata === undefined) {
+                generation.metadata = {};
+            }
+            generation.metadata.call_error = this.callError;
+        }
+        if (generation.metadata === undefined) {
+            generation.metadata = {};
+        }
+        generation.metadata[spanAttrSDKName] = sdkName;
+        const validationError = validateGeneration(generation);
+        const callErrorCategory = errorCategoryFromError(this.callError, false);
+        stampContentCaptureMetadata(generation, this.contentCaptureMode);
+        if (this.contentCaptureMode === 'metadata_only') {
+            stripContent(generation, callErrorCategory);
+        }
+        this.client.internalSyncGenerationSpan(this.span, generation);
+        if (this.contentCaptureMode === 'metadata_only') {
+            this.client.internalClearSpanConversationTitle(this.span);
+        }
+        this.client.internalApplyTraceContextFromSpan(this.span, generation);
+        this.client.internalRecordGeneration(generation);
+        let enqueueError;
+        if (validationError !== undefined) {
+            this.localError = validationError;
+            this.client.internalLogWarn('sigil generation validation failed', validationError);
+        }
+        else {
+            try {
+                this.client.internalEnqueueGeneration(generation);
+            }
+            catch (error) {
+                enqueueError = asError(error);
+                this.localError = enqueueError;
+                this.client.internalLogWarn('sigil generation enqueue failed', enqueueError);
+            }
+        }
+        const finalCallError = this.contentCaptureMode === 'metadata_only' ? generation.callError : this.callError;
+        this.client.internalFinalizeGenerationSpan(this.span, generation, finalCallError, validationError, enqueueError, this.firstTokenAt, callErrorCategory.length > 0 ? callErrorCategory : undefined);
+    }
+    getError() {
+        return this.localError;
+    }
+}
+class EmbeddingRecorderImpl {
+    client;
+    seed;
+    startedAt;
+    span;
+    ended = false;
+    callError;
+    result;
+    hasResult = false;
+    localError;
+    constructor(client, seed) {
+        this.client = client;
+        this.seed = cloneEmbeddingStart(seed);
+        this.startedAt = this.seed.startedAt ?? this.client.internalNow();
+        this.span = this.client.internalStartEmbeddingSpan(this.seed, this.startedAt);
+    }
+    setCallError(error) {
+        if (this.ended) {
+            return;
+        }
+        this.callError = asError(error);
+    }
+    setResult(result) {
+        if (this.ended) {
+            return;
+        }
+        this.result = cloneEmbeddingResult(result);
+        this.hasResult = true;
+    }
+    end() {
+        if (this.ended) {
+            return;
+        }
+        this.ended = true;
+        const completedAt = this.client.internalNow();
+        const normalizedResult = this.result ? cloneEmbeddingResult(this.result) : { inputCount: 0 };
+        let localError = validateEmbeddingStart(this.seed);
+        if (localError === undefined) {
+            localError = validateEmbeddingResult(normalizedResult);
+        }
+        this.client.internalFinalizeEmbeddingSpan(this.span, this.seed, normalizedResult, this.hasResult, this.callError, localError, this.startedAt, completedAt);
+        this.localError = localError;
+    }
+    getError() {
+        return this.localError;
+    }
+}
+class ToolExecutionRecorderImpl {
+    client;
+    seed;
+    startedAt;
+    span;
+    resolvedIncludeContent;
+    ended = false;
+    result;
+    callError;
+    localError;
+    constructor(client, seed) {
+        this.client = client;
+        this.seed = cloneToolExecutionStart(seed);
+        if (!notEmpty(this.seed.conversationId)) {
+            this.seed.conversationId = conversationIdFromContext();
+        }
+        if (!notEmpty(this.seed.conversationTitle)) {
+            this.seed.conversationTitle = conversationTitleFromContext();
+        }
+        if (!notEmpty(this.seed.agentName)) {
+            this.seed.agentName = agentNameFromContext();
+        }
+        if (!notEmpty(this.seed.agentVersion)) {
+            this.seed.agentVersion = agentVersionFromContext();
+        }
+        this.resolvedIncludeContent = this.client.internalResolveToolIncludeContent(this.seed);
+        this.startedAt = this.seed.startedAt ?? this.client.internalNow();
+        this.span = this.client.internalStartToolExecutionSpan(this.seed, this.startedAt);
+    }
+    setResult(result) {
+        if (this.ended) {
+            return;
+        }
+        this.result = cloneToolExecutionResult(result);
+    }
+    setCallError(error) {
+        if (this.ended) {
+            return;
+        }
+        this.localError = asError(error);
+        this.callError = this.localError.message;
+    }
+    end() {
+        if (this.ended) {
+            return;
+        }
+        this.ended = true;
+        const toolExecution = {
+            toolName: this.seed.toolName,
+            toolCallId: this.seed.toolCallId,
+            toolType: this.seed.toolType,
+            toolDescription: this.seed.toolDescription,
+            conversationId: this.seed.conversationId,
+            conversationTitle: this.seed.conversationTitle,
+            agentName: this.seed.agentName,
+            agentVersion: this.seed.agentVersion,
+            requestModel: this.seed.requestModel,
+            requestProvider: this.seed.requestProvider,
+            includeContent: this.resolvedIncludeContent,
+            startedAt: new Date(this.startedAt),
+            completedAt: new Date(this.result?.completedAt ?? this.client.internalNow()),
+            arguments: this.result?.arguments,
+            result: this.result?.result,
+            callError: this.callError,
+        };
+        const validationError = validateToolExecution(toolExecution);
+        if (validationError !== undefined) {
+            this.localError = validationError;
+            this.client.internalLogWarn('sigil tool execution validation failed', validationError);
+        }
+        else {
+            this.client.internalRecordToolExecution(toolExecution);
+        }
+        this.localError = this.client.internalFinalizeToolExecutionSpan(this.span, toolExecution, this.localError);
+    }
+    getError() {
+        return this.localError;
+    }
+}
+class NoopToolExecutionRecorder {
+    setResult(_result) { }
+    setCallError(_error) { }
+    end() { }
+    getError() {
+        return undefined;
+    }
+}
+async function runWithRecorder(recorder, callback) {
+    let callbackError;
+    try {
+        return await callback(recorder);
+    }
+    catch (error) {
+        callbackError = error;
+        recorder.setCallError(error);
+        throw error;
+    }
+    finally {
+        recorder.end();
+        const recorderError = recorder.getError();
+        if (callbackError === undefined && recorderError !== undefined) {
+            // biome-ignore lint/correctness/noUnsafeFinally: intentional — only throws when callback succeeded but recorder detected an error
+            throw recorderError;
+        }
+    }
+}
+function generationSpanName(operationName, modelName) {
+    const operation = operationName.trim();
+    const model = modelName.trim();
+    if (model.length === 0) {
+        return operation;
+    }
+    return `${operation} ${model}`;
+}
+function embeddingSpanName(modelName) {
+    const model = modelName.trim();
+    if (model.length === 0) {
+        return defaultEmbeddingOperationName;
+    }
+    return `${defaultEmbeddingOperationName} ${model}`;
+}
+function toolSpanName(toolName) {
+    const normalized = toolName.trim();
+    if (normalized.length === 0) {
+        return 'execute_tool unknown';
+    }
+    return `execute_tool ${normalized}`;
+}
+function setGenerationSpanAttributes(span, generation) {
+    span.setAttribute(spanAttrOperationName, generation.operationName);
+    span.setAttribute(spanAttrSDKName, sdkName);
+    if (notEmpty(generation.id)) {
+        span.setAttribute(spanAttrGenerationID, generation.id);
+    }
+    if (notEmpty(generation.conversationId)) {
+        span.setAttribute(spanAttrConversationID, generation.conversationId);
+    }
+    if (notEmpty(generation.conversationTitle)) {
+        span.setAttribute(spanAttrConversationTitle, generation.conversationTitle);
+    }
+    if (notEmpty(generation.userId)) {
+        span.setAttribute(spanAttrUserID, generation.userId);
+    }
+    if (notEmpty(generation.agentName)) {
+        span.setAttribute(spanAttrAgentName, generation.agentName);
+    }
+    if (notEmpty(generation.agentVersion)) {
+        span.setAttribute(spanAttrAgentVersion, generation.agentVersion);
+    }
+    if (notEmpty(generation.model.provider)) {
+        span.setAttribute(spanAttrProviderName, generation.model.provider);
+    }
+    if (notEmpty(generation.model.name)) {
+        span.setAttribute(spanAttrRequestModel, generation.model.name);
+    }
+    if (generation.maxTokens !== undefined) {
+        span.setAttribute(spanAttrRequestMaxTokens, generation.maxTokens);
+    }
+    if (generation.temperature !== undefined) {
+        span.setAttribute(spanAttrRequestTemperature, generation.temperature);
+    }
+    if (generation.topP !== undefined) {
+        span.setAttribute(spanAttrRequestTopP, generation.topP);
+    }
+    if (notEmpty(generation.toolChoice)) {
+        span.setAttribute(spanAttrRequestToolChoice, generation.toolChoice);
+    }
+    if (generation.thinkingEnabled !== undefined) {
+        span.setAttribute(spanAttrRequestThinkingEnabled, generation.thinkingEnabled);
+    }
+    const thinkingBudget = thinkingBudgetFromMetadata(generation.metadata);
+    if (thinkingBudget !== undefined) {
+        span.setAttribute(spanAttrRequestThinkingBudget, thinkingBudget);
+    }
+    const frameworkRunId = metadataStringValue(generation.metadata, spanAttrFrameworkRunID);
+    if (frameworkRunId !== undefined) {
+        span.setAttribute(spanAttrFrameworkRunID, frameworkRunId);
+    }
+    const frameworkThreadId = metadataStringValue(generation.metadata, spanAttrFrameworkThreadID);
+    if (frameworkThreadId !== undefined) {
+        span.setAttribute(spanAttrFrameworkThreadID, frameworkThreadId);
+    }
+    const frameworkParentRunId = metadataStringValue(generation.metadata, spanAttrFrameworkParentRunID);
+    if (frameworkParentRunId !== undefined) {
+        span.setAttribute(spanAttrFrameworkParentRunID, frameworkParentRunId);
+    }
+    const frameworkComponentName = metadataStringValue(generation.metadata, spanAttrFrameworkComponentName);
+    if (frameworkComponentName !== undefined) {
+        span.setAttribute(spanAttrFrameworkComponentName, frameworkComponentName);
+    }
+    const frameworkRunType = metadataStringValue(generation.metadata, spanAttrFrameworkRunType);
+    if (frameworkRunType !== undefined) {
+        span.setAttribute(spanAttrFrameworkRunType, frameworkRunType);
+    }
+    const frameworkRetryAttempt = metadataIntValue(generation.metadata, spanAttrFrameworkRetryAttempt);
+    if (frameworkRetryAttempt !== undefined) {
+        span.setAttribute(spanAttrFrameworkRetryAttempt, frameworkRetryAttempt);
+    }
+    const frameworkLangGraphNode = metadataStringValue(generation.metadata, spanAttrFrameworkLangGraphNode);
+    if (frameworkLangGraphNode !== undefined) {
+        span.setAttribute(spanAttrFrameworkLangGraphNode, frameworkLangGraphNode);
+    }
+    const frameworkEventID = metadataStringValue(generation.metadata, spanAttrFrameworkEventID);
+    if (frameworkEventID !== undefined) {
+        span.setAttribute(spanAttrFrameworkEventID, frameworkEventID);
+    }
+    if (notEmpty(generation.responseId)) {
+        span.setAttribute(spanAttrResponseID, generation.responseId);
+    }
+    if (notEmpty(generation.responseModel)) {
+        span.setAttribute(spanAttrResponseModel, generation.responseModel);
+    }
+    if (notEmpty(generation.stopReason)) {
+        span.setAttribute(spanAttrFinishReasons, [generation.stopReason]);
+    }
+    const usage = generation.usage;
+    if (usage === undefined) {
+        return;
+    }
+    if ((usage.inputTokens ?? 0) !== 0) {
+        span.setAttribute(spanAttrInputTokens, usage.inputTokens ?? 0);
+    }
+    if ((usage.outputTokens ?? 0) !== 0) {
+        span.setAttribute(spanAttrOutputTokens, usage.outputTokens ?? 0);
+    }
+    if ((usage.cacheReadInputTokens ?? 0) !== 0) {
+        span.setAttribute(spanAttrCacheReadTokens, usage.cacheReadInputTokens ?? 0);
+    }
+    if ((usage.cacheWriteInputTokens ?? 0) !== 0) {
+        span.setAttribute(spanAttrCacheWriteTokens, usage.cacheWriteInputTokens ?? 0);
+    }
+    if ((usage.cacheCreationInputTokens ?? 0) !== 0) {
+        span.setAttribute(spanAttrCacheCreationTokens, usage.cacheCreationInputTokens ?? 0);
+    }
+    if ((usage.reasoningTokens ?? 0) !== 0) {
+        span.setAttribute(spanAttrReasoningTokens, usage.reasoningTokens ?? 0);
+    }
+}
+function setEmbeddingStartSpanAttributes(span, start) {
+    span.setAttribute(spanAttrOperationName, defaultEmbeddingOperationName);
+    span.setAttribute(spanAttrSDKName, sdkName);
+    if (notEmpty(start.model.provider)) {
+        span.setAttribute(spanAttrProviderName, start.model.provider);
+    }
+    if (notEmpty(start.model.name)) {
+        span.setAttribute(spanAttrRequestModel, start.model.name);
+    }
+    if (notEmpty(start.agentName)) {
+        span.setAttribute(spanAttrAgentName, start.agentName);
+    }
+    if (notEmpty(start.agentVersion)) {
+        span.setAttribute(spanAttrAgentVersion, start.agentVersion);
+    }
+    if (start.dimensions !== undefined) {
+        span.setAttribute(spanAttrEmbeddingDimCount, start.dimensions);
+    }
+    if (notEmpty(start.encodingFormat)) {
+        span.setAttribute(spanAttrRequestEncodingFormats, [start.encodingFormat]);
+    }
+}
+function setEmbeddingEndSpanAttributes(span, result, hasResult, captureConfig) {
+    if (hasResult) {
+        span.setAttribute(spanAttrEmbeddingInputCount, result.inputCount);
+    }
+    if (result.inputTokens !== undefined && result.inputTokens !== 0) {
+        span.setAttribute(spanAttrInputTokens, result.inputTokens);
+    }
+    if (notEmpty(result.responseModel)) {
+        span.setAttribute(spanAttrResponseModel, result.responseModel);
+    }
+    if (result.dimensions !== undefined) {
+        span.setAttribute(spanAttrEmbeddingDimCount, result.dimensions);
+    }
+    if (captureConfig.captureInput && result.inputTexts !== undefined) {
+        const texts = captureEmbeddingInputTexts(result.inputTexts, captureConfig.maxInputItems, captureConfig.maxTextLength);
+        if (texts.length > 0) {
+            span.setAttribute(spanAttrEmbeddingInputTexts, texts);
+        }
+    }
+}
+function setToolSpanAttributes(span, tool) {
+    span.setAttribute(spanAttrOperationName, 'execute_tool');
+    span.setAttribute(spanAttrToolName, tool.toolName);
+    span.setAttribute(spanAttrSDKName, sdkName);
+    if (notEmpty(tool.toolCallId)) {
+        span.setAttribute(spanAttrToolCallID, tool.toolCallId);
+    }
+    if (notEmpty(tool.toolType)) {
+        span.setAttribute(spanAttrToolType, tool.toolType);
+    }
+    if (notEmpty(tool.toolDescription)) {
+        span.setAttribute(spanAttrToolDescription, tool.toolDescription);
+    }
+    if (notEmpty(tool.conversationId)) {
+        span.setAttribute(spanAttrConversationID, tool.conversationId);
+    }
+    if (notEmpty(tool.conversationTitle)) {
+        span.setAttribute(spanAttrConversationTitle, tool.conversationTitle);
+    }
+    if (notEmpty(tool.agentName)) {
+        span.setAttribute(spanAttrAgentName, tool.agentName);
+    }
+    if (notEmpty(tool.agentVersion)) {
+        span.setAttribute(spanAttrAgentVersion, tool.agentVersion);
+    }
+    if (notEmpty(tool.requestProvider)) {
+        span.setAttribute(spanAttrProviderName, tool.requestProvider);
+    }
+    if (notEmpty(tool.requestModel)) {
+        span.setAttribute(spanAttrRequestModel, tool.requestModel);
+    }
+}
+function serializeToolContent(value) {
+    if (value === undefined || value === null) {
+        return {};
+    }
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+            return {};
+        }
+        if (isJSON(trimmed)) {
+            return { value: trimmed };
+        }
+        try {
+            return { value: JSON.stringify(trimmed) };
+        }
+        catch (error) {
+            return { error: asError(error) };
+        }
+    }
+    try {
+        const encoded = JSON.stringify(value);
+        if (encoded === undefined || encoded === 'null') {
+            return {};
+        }
+        return { value: encoded };
+    }
+    catch (error) {
+        return { error: asError(error) };
+    }
+}
+function normalizeConversationRatingInput(input) {
+    const normalized = {
+        ratingId: input.ratingId.trim(),
+        rating: input.rating.trim(),
+        comment: input.comment?.trim(),
+        metadata: input.metadata,
+        generationId: input.generationId?.trim(),
+        raterId: input.raterId?.trim(),
+        source: input.source?.trim(),
+    };
+    if (normalized.ratingId.length === 0) {
+        throw new Error('sigil conversation rating validation failed: ratingId is required');
+    }
+    if (normalized.ratingId.length > maxRatingIdLen) {
+        throw new Error('sigil conversation rating validation failed: ratingId is too long');
+    }
+    if (normalized.rating !== 'CONVERSATION_RATING_VALUE_GOOD' && normalized.rating !== 'CONVERSATION_RATING_VALUE_BAD') {
+        throw new Error('sigil conversation rating validation failed: rating must be CONVERSATION_RATING_VALUE_GOOD or CONVERSATION_RATING_VALUE_BAD');
+    }
+    if (normalized.comment !== undefined && encodedSizeBytes(normalized.comment) > maxRatingCommentBytes) {
+        throw new Error('sigil conversation rating validation failed: comment is too long');
+    }
+    if (normalized.generationId !== undefined && normalized.generationId.length > maxRatingGenerationIdLen) {
+        throw new Error('sigil conversation rating validation failed: generationId is too long');
+    }
+    if (normalized.raterId !== undefined && normalized.raterId.length > maxRatingActorIdLen) {
+        throw new Error('sigil conversation rating validation failed: raterId is too long');
+    }
+    if (normalized.source !== undefined && normalized.source.length > maxRatingSourceLen) {
+        throw new Error('sigil conversation rating validation failed: source is too long');
+    }
+    if (normalized.metadata !== undefined && encodedSizeBytes(normalized.metadata) > maxRatingMetadataBytes) {
+        throw new Error('sigil conversation rating validation failed: metadata is too large');
+    }
+    return normalized;
+}
+function buildConversationRatingEndpoint(endpoint, insecure, conversationId) {
+    const baseURL = baseURLFromAPIEndpoint(endpoint, insecure);
+    return `${baseURL}/api/v1/conversations/${encodeURIComponent(conversationId)}/ratings`;
+}
+function baseURLFromAPIEndpoint(endpoint, insecure) {
+    const trimmed = endpoint.trim();
+    if (trimmed.length === 0) {
+        throw new Error('sigil conversation rating transport failed: api endpoint is required');
+    }
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        const parsed = new URL(trimmed);
+        return `${parsed.protocol}//${parsed.host}`;
+    }
+    const withoutScheme = trimmed.startsWith('grpc://') ? trimmed.slice('grpc://'.length) : trimmed;
+    const host = withoutScheme.split('/')[0]?.trim();
+    if (host === undefined || host.length === 0) {
+        throw new Error('sigil conversation rating transport failed: api endpoint host is required');
+    }
+    return `${insecure ? 'http' : 'https'}://${host}`;
+}
+function parseSubmitConversationRatingResponse(payload) {
+    if (!isObject(payload)) {
+        throw new Error('sigil conversation rating transport failed: invalid response payload');
+    }
+    if (!isObject(payload.rating) || !isObject(payload.summary)) {
+        throw new Error('sigil conversation rating transport failed: invalid response payload');
+    }
+    const rating = mapConversationRating(payload.rating);
+    const summary = mapConversationRatingSummary(payload.summary);
+    return { rating, summary };
+}
+function mapConversationRating(payload) {
+    const ratingId = asString(payload.rating_id);
+    const conversationId = asString(payload.conversation_id);
+    const rating = asString(payload.rating);
+    const createdAt = asString(payload.created_at);
+    if (ratingId === undefined || conversationId === undefined || rating === undefined || createdAt === undefined) {
+        throw new Error('sigil conversation rating transport failed: invalid rating payload');
+    }
+    return {
+        ratingId,
+        conversationId,
+        generationId: asString(payload.generation_id),
+        rating,
+        comment: asString(payload.comment),
+        metadata: asRecordUnknown(payload.metadata),
+        raterId: asString(payload.rater_id),
+        source: asString(payload.source),
+        createdAt,
+    };
+}
+function mapConversationRatingSummary(payload) {
+    const totalCount = asNumber(payload.total_count);
+    const goodCount = asNumber(payload.good_count);
+    const badCount = asNumber(payload.bad_count);
+    const latestRatedAt = asString(payload.latest_rated_at);
+    const hasBadRating = asBoolean(payload.has_bad_rating);
+    if (totalCount === undefined ||
+        goodCount === undefined ||
+        badCount === undefined ||
+        latestRatedAt === undefined ||
+        hasBadRating === undefined) {
+        throw new Error('sigil conversation rating transport failed: invalid rating summary payload');
+    }
+    return {
+        totalCount,
+        goodCount,
+        badCount,
+        latestRating: asString(payload.latest_rating),
+        latestRatedAt,
+        latestBadAt: asString(payload.latest_bad_at),
+        hasBadRating,
+    };
+}
+function asString(value) {
+    return typeof value === 'string' ? value : undefined;
+}
+function asNumber(value) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+function asBoolean(value) {
+    return typeof value === 'boolean' ? value : undefined;
+}
+function asRecordUnknown(value) {
+    return isObject(value) ? value : undefined;
+}
+function isObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function ratingErrorText(responseText, status) {
+    if (responseText.length > 0) {
+        return responseText;
+    }
+    return `HTTP ${status}`;
+}
+function captureEmbeddingInputTexts(inputTexts, maxInputItems, maxTextLength) {
+    if (inputTexts.length === 0) {
+        return [];
+    }
+    const itemLimit = maxInputItems > 0 ? maxInputItems : 20;
+    const textLimit = maxTextLength > 0 ? maxTextLength : 1024;
+    const output = [];
+    const end = Math.min(itemLimit, inputTexts.length);
+    for (let index = 0; index < end; index++) {
+        output.push(truncateEmbeddingText(inputTexts[index] ?? '', textLimit));
+    }
+    return output;
+}
+function truncateEmbeddingText(text, maxTextLength) {
+    if (text.length <= maxTextLength) {
+        return text;
+    }
+    if (maxTextLength <= 3) {
+        return text.slice(0, maxTextLength);
+    }
+    return `${text.slice(0, maxTextLength - 3)}...`;
+}
+function thinkingBudgetFromMetadata(metadata) {
+    if (metadata === undefined) {
+        return undefined;
+    }
+    const raw = metadata[spanAttrRequestThinkingBudget];
+    if (raw === undefined || raw === null || typeof raw === 'boolean') {
+        return undefined;
+    }
+    if (typeof raw === 'number') {
+        if (!Number.isFinite(raw) || !Number.isInteger(raw)) {
+            return undefined;
+        }
+        return raw;
+    }
+    if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        if (trimmed.length === 0) {
+            return undefined;
+        }
+        const parsed = Number.parseInt(trimmed, 10);
+        if (Number.isNaN(parsed)) {
+            return undefined;
+        }
+        return parsed;
+    }
+    return undefined;
+}
+function metadataStringValue(metadata, key) {
+    if (metadata === undefined) {
+        return undefined;
+    }
+    const value = metadata[key];
+    if (typeof value !== 'string') {
+        return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+}
+function metadataIntValue(metadata, key) {
+    if (metadata === undefined) {
+        return undefined;
+    }
+    const value = metadata[key];
+    if (value === undefined || value === null || typeof value === 'boolean') {
+        return undefined;
+    }
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value) || !Number.isInteger(value)) {
+            return undefined;
+        }
+        return value;
+    }
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+            return undefined;
+        }
+        const parsed = Number.parseInt(trimmed, 10);
+        if (Number.isNaN(parsed)) {
+            return undefined;
+        }
+        return parsed;
+    }
+    return undefined;
+}
+function firstNonEmptyString(...values) {
+    for (const value of values) {
+        if (notEmpty(value)) {
+            return value;
+        }
+    }
+    return undefined;
+}
+function mergeStringRecords(left, right) {
+    if (left === undefined && right === undefined) {
+        return undefined;
+    }
+    return {
+        ...(left ?? {}),
+        ...(right ?? {}),
+    };
+}
+function mergeUnknownRecords(left, right) {
+    if (left === undefined && right === undefined) {
+        return undefined;
+    }
+    return {
+        ...(left ?? {}),
+        ...(right ?? {}),
+    };
+}
+function countToolCallParts(messages) {
+    let total = 0;
+    for (const message of messages) {
+        if (message.parts === undefined) {
+            continue;
+        }
+        for (const part of message.parts) {
+            if (part.type === 'tool_call') {
+                total += 1;
+            }
+        }
+    }
+    return total;
+}
+function errorCategoryFromError(error, fallbackSDK) {
+    if (error === undefined || error === null) {
+        return fallbackSDK ? 'sdk_error' : '';
+    }
+    if (typeof error === 'string') {
+        return classifyErrorCategory(extractStatusCodeFromError(error), error, fallbackSDK);
+    }
+    const typed = error;
+    const statusCode = extractStatusCodeFromObject(typed) ?? extractStatusCodeFromError(asError(error).message);
+    const message = asError(error).message;
+    return classifyErrorCategory(statusCode, message, fallbackSDK);
+}
+function classifyErrorCategory(statusCode, message, fallbackSDK) {
+    const lowerMessage = message.toLowerCase();
+    if (lowerMessage.includes('timeout') || lowerMessage.includes('deadline exceeded')) {
+        return 'timeout';
+    }
+    if (statusCode === 429) {
+        return 'rate_limit';
+    }
+    if (statusCode === 401 || statusCode === 403) {
+        return 'auth_error';
+    }
+    if (statusCode === 408) {
+        return 'timeout';
+    }
+    if (statusCode !== undefined && statusCode >= 500 && statusCode <= 599) {
+        return 'server_error';
+    }
+    if (statusCode !== undefined && statusCode >= 400 && statusCode <= 499) {
+        return 'client_error';
+    }
+    return fallbackSDK ? 'sdk_error' : '';
+}
+function extractStatusCodeFromObject(error) {
+    const direct = asStatusCode(error.status) ?? asStatusCode(error.statusCode);
+    if (direct !== undefined) {
+        return direct;
+    }
+    if (isRecord(error.response)) {
+        return asStatusCode(error.response.status) ?? asStatusCode(error.response.statusCode);
+    }
+    if (isRecord(error.error)) {
+        return asStatusCode(error.error.status) ?? asStatusCode(error.error.statusCode);
+    }
+    return undefined;
+}
+function extractStatusCodeFromError(message) {
+    const matches = message.match(/\b([1-5]\d\d)\b/g);
+    if (matches === null) {
+        return undefined;
+    }
+    for (const match of matches) {
+        const parsed = Number.parseInt(match, 10);
+        if (!Number.isNaN(parsed) && parsed >= 100 && parsed <= 599) {
+            return parsed;
+        }
+    }
+    return undefined;
+}
+function asStatusCode(value) {
+    if (typeof value !== 'number') {
+        return undefined;
+    }
+    if (!Number.isInteger(value) || value < 100 || value > 599) {
+        return undefined;
+    }
+    return value;
+}
+function isRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function isJSON(value) {
+    try {
+        JSON.parse(value);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function notEmpty(value) {
+    return value !== undefined && value.trim().length > 0;
+}
+//# sourceMappingURL=client.js.map

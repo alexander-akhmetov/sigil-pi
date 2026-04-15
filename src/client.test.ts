@@ -17,7 +17,7 @@ function makeConfig(overrides?: Partial<SigilPiConfig>): SigilPiConfig {
     endpoint: "http://localhost:8080/api/v1/generations:export",
     auth: { mode: "none" },
     agentName: "pi",
-    contentCapture: false,
+    contentCapture: "metadata_only",
     debug: false,
     ...overrides,
   };
@@ -44,6 +44,7 @@ describe("createSigilClient", () => {
         endpoint: "http://localhost:8080/api/v1/generations:export",
         auth: { mode: "tenant", tenantId: "t-1" },
       },
+      contentCapture: "metadata_only",
     });
   });
 
@@ -70,7 +71,15 @@ describe("createSigilClient", () => {
           tenantId: "12345",
         },
       },
+      contentCapture: "metadata_only",
     });
+  });
+
+  it("passes contentCapture to SigilClient", () => {
+    createSigilClient(makeConfig({ contentCapture: "full" }));
+    expect(SigilClientMock).toHaveBeenCalledWith(
+      expect.objectContaining({ contentCapture: "full" }),
+    );
   });
 
   it("returns null when sdk constructor throws", () => {

@@ -16,6 +16,8 @@ npx esbuild src/index.ts \
   --outfile=dist/index.js \
   --external:@mariozechner/pi-coding-agent \
   --external:@mariozechner/pi-ai \
-  --external:@sinclair/typebox
+  --external:@sinclair/typebox \
+  --external:@grpc/grpc-js \
+  --external:@grpc/proto-loader
 
 echo "Built dist/index.js"

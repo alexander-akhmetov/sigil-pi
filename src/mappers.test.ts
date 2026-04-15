@@ -94,7 +94,7 @@ describe("mapGenerationStart", () => {
 describe("mapGenerationResult", () => {
   it("maps usage and metadata (no content)", () => {
     const msg = makeMsg();
-    const result = mapGenerationResult(msg, [], [], false, undefined);
+    const result = mapGenerationResult(msg, [], [], "metadata_only", undefined);
 
     expect(result.usage).toEqual({
       inputTokens: 100,
@@ -110,7 +110,7 @@ describe("mapGenerationResult", () => {
     expect(result.metadata?.cost_usd).toBe(0.012);
   });
 
-  it("maps tool timings as metadata-only output", () => {
+  it("metadata_only produces no output even with timings", () => {
     const timings = [
       makeTiming({
         toolCallId: "c1",
@@ -130,28 +130,43 @@ describe("mapGenerationResult", () => {
       makeMsg(),
       [],
       timings,
-      false,
+      "metadata_only",
       undefined,
     );
 
-    expect(result.output).toHaveLength(2);
-    // assistant message with tool_call parts
-    const assistantMsg = result.output?.[0]!;
-    expect(assistantMsg.role).toBe("assistant");
-    expect(assistantMsg.parts).toHaveLength(2);
-    expect(assistantMsg.parts?.[0]?.type).toBe("tool_call");
+    expect(result.output).toBeUndefined();
+  });
 
-    // tool message with tool_result parts
-    const toolMsg = result.output?.[1]!;
-    expect(toolMsg.role).toBe("tool");
-    expect(toolMsg.parts?.[0]?.type).toBe("tool_result");
-    const tr = (toolMsg.parts?.[0] as any).toolResult;
-    expect(tr.content).toBe("1500ms");
-    expect(tr.isError).toBe(false);
+  it("no_tool_content builds full content like full mode", () => {
+    const msg = makeMsg({
+      content: [
+        { type: "text", text: "I'll run that command" },
+        {
+          type: "toolCall",
+          id: "c1",
+          name: "bash",
+          arguments: { command: "ls" },
+        },
+      ],
+    });
+    const toolResults = [
+      makeToolResult({
+        toolCallId: "c1",
+        content: [{ type: "text", text: "file.txt" }],
+      }),
+    ];
+    const result = mapGenerationResult(
+      msg,
+      toolResults,
+      [],
+      "no_tool_content",
+      redactor,
+    );
 
-    const tr2 = (toolMsg.parts?.[1] as any).toolResult;
-    expect(tr2.content).toBe("500ms");
-    expect(tr2.isError).toBe(true);
+    expect(result.output).toHaveLength(3);
+    const roles = result.output?.map((m) => m.role);
+    expect(roles).toContain("assistant");
+    expect(roles).toContain("tool");
   });
 
   it("contentCapture emits real content without synthetic timing messages", () => {
@@ -184,7 +199,7 @@ describe("mapGenerationResult", () => {
       msg,
       toolResults,
       timings,
-      true,
+      "full",
       redactor,
     );
 
@@ -204,7 +219,7 @@ describe("mapGenerationResult", () => {
     const msg = makeMsg({
       content: [{ type: "text", text: `Token: ${secret}` }],
     });
-    const result = mapGenerationResult(msg, [], [], true, redactor);
+    const result = mapGenerationResult(msg, [], [], "full", redactor);
     const text = (result.output?.[0]?.parts?.[0] as any).text;
     expect(text).not.toContain(secret);
     expect(text).toContain("[REDACTED:");
@@ -217,7 +232,7 @@ describe("mapGenerationResult", () => {
         { type: "text", text: "result" },
       ],
     });
-    const result = mapGenerationResult(msg, [], [], true, redactor);
+    const result = mapGenerationResult(msg, [], [], "full", redactor);
     const allText = result.output
       ?.map(
         (m) =>
@@ -240,7 +255,7 @@ describe("mapGenerationResult", () => {
         makeMsg({ stopReason: "stop" }),
         [],
         [],
-        false,
+        "metadata_only",
         undefined,
       ).stopReason,
     ).toBe("end_turn");
@@ -249,7 +264,7 @@ describe("mapGenerationResult", () => {
         makeMsg({ stopReason: "length" }),
         [],
         [],
-        false,
+        "metadata_only",
         undefined,
       ).stopReason,
     ).toBe("max_tokens");
@@ -258,7 +273,7 @@ describe("mapGenerationResult", () => {
         makeMsg({ stopReason: "toolUse" }),
         [],
         [],
-        false,
+        "metadata_only",
         undefined,
       ).stopReason,
     ).toBe("tool_use");
@@ -267,7 +282,7 @@ describe("mapGenerationResult", () => {
         makeMsg({ stopReason: "error" }),
         [],
         [],
-        false,
+        "metadata_only",
         undefined,
       ).stopReason,
     ).toBe("error");

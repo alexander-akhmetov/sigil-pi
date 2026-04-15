@@ -116,7 +116,7 @@ describe("extension lifecycle", () => {
       endpoint: "http://localhost:8080/api/v1/generations:export",
       auth: { mode: "none" },
       agentName: "pi",
-      contentCapture: false,
+      contentCapture: "metadata_only",
     });
     createSigilClientMock.mockReturnValue(sigil);
 
@@ -163,7 +163,7 @@ describe("extension lifecycle", () => {
       endpoint: "http://localhost:8080/api/v1/generations:export",
       auth: { mode: "none" },
       agentName: "pi",
-      contentCapture: false,
+      contentCapture: "metadata_only",
     });
     createSigilClientMock.mockReturnValue(sigil);
 
@@ -216,7 +216,7 @@ describe("extension lifecycle", () => {
       endpoint: "http://localhost:8080/api/v1/generations:export",
       auth: { mode: "none" },
       agentName: "pi",
-      contentCapture: false,
+      contentCapture: "metadata_only",
     });
     createSigilClientMock.mockReturnValue(sigil);
 
@@ -269,7 +269,7 @@ describe("extension lifecycle", () => {
       endpoint: "http://localhost:8080/api/v1/generations:export",
       auth: { mode: "none" },
       agentName: "pi",
-      contentCapture: false,
+      contentCapture: "metadata_only",
     });
     createSigilClientMock.mockReturnValue(sigil);
 
@@ -372,7 +372,7 @@ describe("emitToolSpans", () => {
     const { client, recorders } = mockSigilClient();
     emitToolSpans(client, makePiMsg(), [], [], {
       agentName: "pi",
-      contentCapture: false,
+      contentCapture: "metadata_only",
     });
     expect(recorders).toHaveLength(0);
   });
@@ -399,7 +399,7 @@ describe("emitToolSpans", () => {
         makePiTiming({ toolCallId: "c1", toolName: "bash" }),
         makePiTiming({ toolCallId: "c2", toolName: "read" }),
       ],
-      { agentName: "pi", contentCapture: false },
+      { agentName: "pi", contentCapture: "metadata_only" },
     );
 
     expect(recorders).toHaveLength(2);
@@ -427,7 +427,7 @@ describe("emitToolSpans", () => {
         conversationId: "conv-42",
         agentName: "pi",
         agentVersion: "2.0.0",
-        contentCapture: false,
+        contentCapture: "metadata_only",
       },
     );
 
@@ -461,7 +461,7 @@ describe("emitToolSpans", () => {
       [makePiTiming({ toolCallId: "c1" })],
       {
         agentName: "pi",
-        contentCapture: true,
+        contentCapture: "full",
         redactor: new Redactor(),
       },
     );
@@ -485,7 +485,7 @@ describe("emitToolSpans", () => {
       [makePiTiming({ toolCallId: "c1" })],
       {
         agentName: "pi",
-        contentCapture: false,
+        contentCapture: "metadata_only",
       },
     );
 
@@ -500,7 +500,7 @@ describe("emitToolSpans", () => {
       makePiMsg(),
       [],
       [makePiTiming({ toolCallId: "c1", isError: true })],
-      { agentName: "pi", contentCapture: false },
+      { agentName: "pi", contentCapture: "metadata_only" },
     );
 
     expect(recorders[0]!.callError).toBeInstanceOf(Error);
@@ -513,7 +513,7 @@ describe("emitToolSpans", () => {
       makePiMsg(),
       [],
       [makePiTiming({ startedAt: 1000, completedAt: 5000 })],
-      { agentName: "pi", contentCapture: false },
+      { agentName: "pi", contentCapture: "metadata_only" },
     );
 
     expect(recorders[0]!.start).toMatchObject({ startedAt: new Date(1000) });
@@ -547,7 +547,7 @@ describe("emitToolSpans", () => {
       [makePiTiming({ toolCallId: "c1" })],
       {
         agentName: "pi",
-        contentCapture: true,
+        contentCapture: "full",
         redactor: new Redactor(),
       },
     );

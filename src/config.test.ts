@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig, resolveEnvVars } from "./config.js";
 
 function clearEnv() {
@@ -49,7 +49,7 @@ describe("resolveConfig", () => {
     expect(cfg.auth).toEqual({ mode: "tenant", tenantId: "my-tenant" });
     expect(cfg.agentName).toBe("pi-custom");
     expect(cfg.agentVersion).toBe("1.0.0");
-    expect(cfg.contentCapture).toBe(true);
+    expect(cfg.contentCapture).toBe("full");
   });
 
   it("auto-appends export path to endpoint", () => {
@@ -82,12 +82,53 @@ describe("resolveConfig", () => {
     );
   });
 
-  it("defaults contentCapture to false", () => {
+  it("defaults contentCapture to metadata_only", () => {
     const cfg = resolveConfig({
       enabled: true,
       endpoint: "http://localhost:8080/api/v1/generations:export",
     });
-    expect(cfg.contentCapture).toBe(false);
+    expect(cfg.contentCapture).toBe("metadata_only");
+  });
+
+  it("maps boolean true to full", () => {
+    const cfg = resolveConfig({
+      enabled: true,
+      endpoint: "http://localhost:8080/api/v1/generations:export",
+      contentCapture: true,
+    });
+    expect(cfg.contentCapture).toBe("full");
+  });
+
+  it("maps boolean false to metadata_only", () => {
+    const cfg = resolveConfig({
+      enabled: true,
+      endpoint: "http://localhost:8080/api/v1/generations:export",
+      contentCapture: false,
+    });
+    expect(cfg.contentCapture).toBe("metadata_only");
+  });
+
+  it("accepts mode string no_tool_content", () => {
+    const cfg = resolveConfig({
+      enabled: true,
+      endpoint: "http://localhost:8080/api/v1/generations:export",
+      contentCapture: "no_tool_content",
+    });
+    expect(cfg.contentCapture).toBe("no_tool_content");
+  });
+
+  it("warns and falls back on unknown mode string", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cfg = resolveConfig({
+      enabled: true,
+      endpoint: "http://localhost:8080/api/v1/generations:export",
+      contentCapture: "yolo",
+    });
+    expect(cfg.contentCapture).toBe("metadata_only");
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("unsupported contentCapture"),
+    );
+    warn.mockRestore();
   });
 
   it("defaults agentName to 'pi'", () => {
@@ -118,7 +159,7 @@ describe("resolveConfig", () => {
     expect(cfg.enabled).toBe(true);
     expect(cfg.endpoint).toBe("http://env:9090/api/v1/generations:export");
     expect(cfg.agentName).toBe("pi-env");
-    expect(cfg.contentCapture).toBe(true);
+    expect(cfg.contentCapture).toBe("full");
     expect(cfg.auth).toEqual({ mode: "bearer", bearerToken: "tok-123" });
   });
 
@@ -131,7 +172,7 @@ describe("resolveConfig", () => {
     const cfg = resolveConfig({ enabled: false, auth: { mode: "none" } });
 
     expect(cfg.enabled).toBe(true);
-    expect(cfg.contentCapture).toBe(true);
+    expect(cfg.contentCapture).toBe("full");
   });
 
   it("env SIGIL_PI_ENABLED=0 disables", () => {

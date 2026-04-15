@@ -1,0 +1,25 @@
+import type { Artifact, EmbeddingResult, EmbeddingStart, Generation, GenerationMode, GenerationResult, GenerationStart, Message, ModelRef, ToolDefinition, ToolExecution, ToolExecutionResult, ToolExecutionStart } from './types.js';
+export declare function encodedSizeBytes(value: unknown): number;
+export declare function defaultOperationNameForMode(mode: GenerationMode): string;
+export declare function validateGeneration(generation: Generation): Error | undefined;
+export declare function validateToolExecution(toolExecution: ToolExecution): Error | undefined;
+export declare function validateEmbeddingStart(start: EmbeddingStart): Error | undefined;
+export declare function validateEmbeddingResult(result: EmbeddingResult): Error | undefined;
+export declare function asError(value: unknown): Error;
+export declare function isRecord(value: unknown): value is Record<string, unknown>;
+export declare function maybeUnref(timer: ReturnType<typeof setInterval>): void;
+export declare function defaultSleep(durationMs: number): Promise<void>;
+export declare function cloneGeneration(generation: Generation): Generation;
+export declare function cloneGenerationResult(result: GenerationResult): GenerationResult;
+export declare function cloneGenerationStart(start: GenerationStart): GenerationStart;
+export declare function cloneEmbeddingStart(start: EmbeddingStart): EmbeddingStart;
+export declare function cloneEmbeddingResult(result: EmbeddingResult): EmbeddingResult;
+export declare function cloneToolExecution(toolExecution: ToolExecution): ToolExecution;
+export declare function cloneToolExecutionStart(start: ToolExecutionStart): ToolExecutionStart;
+export declare function cloneToolExecutionResult(result: ToolExecutionResult): ToolExecutionResult;
+export declare function cloneModelRef(model: ModelRef): ModelRef;
+export declare function cloneMessage(message: Message): Message;
+export declare function cloneToolDefinition(tool: ToolDefinition): ToolDefinition;
+export declare function cloneArtifact(artifact: Artifact): Artifact;
+export declare function newLocalID(prefix: string): string;
+//# sourceMappingURL=utils.d.ts.map
