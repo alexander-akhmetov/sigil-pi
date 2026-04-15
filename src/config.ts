@@ -1,7 +1,7 @@
-import type { ContentCaptureMode } from "@grafana/sigil-sdk-js";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { ContentCaptureMode } from "@grafana/sigil-sdk-js";
 
 export type SigilAuthConfig =
   | { mode: "bearer"; bearerToken: string }

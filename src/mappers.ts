@@ -87,7 +87,7 @@ export function mapGenerationStart(
 export function mapGenerationResult(
   msg: PiAssistantMessage,
   toolResults: PiToolResult[],
-  toolTimings: ToolTiming[],
+  _toolTimings: ToolTiming[],
   contentCapture: ContentCaptureMode,
   redactor: Redactor | undefined,
 ): GenerationResult {

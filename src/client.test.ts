@@ -26,6 +26,7 @@ function makeConfig(overrides?: Partial<SigilPiConfig>): SigilPiConfig {
 describe("createSigilClient", () => {
   beforeEach(() => {
     SigilClientMock.mockReset();
+    // biome-ignore lint/complexity/useArrowFunction: must be a regular function for `new` to work
     SigilClientMock.mockImplementation(function () {
       return {};
     });
@@ -83,7 +84,7 @@ describe("createSigilClient", () => {
   });
 
   it("returns null when sdk constructor throws", () => {
-    SigilClientMock.mockImplementationOnce(function () {
+    SigilClientMock.mockImplementationOnce(() => {
       throw new Error("boom");
     });
 
